@@ -3,9 +3,14 @@
 資料集只有標註：每段約 7 秒的轉播片段，記錄 YouTube 網址、起訖秒數與動作標籤（swing、hit、foul…）。
 影片要自己下載整場比賽，再依標註切成片段（cut_clip）。
 
-轉播多是中外野視角：畫面中最大的人通常是投手，而每段片段都有投球。所以同時比較兩種選打者的方式：
-  agent      與 Agent 相同：select_subject(scan, "batter")，選分數最高的人
-  broadcast  排除身形最大的人（通常是投手），再從其餘人中選分數最高的
+轉播多是中外野視角：畫面中最大的人通常是投手，而每段片段都有投球。所以同時比較三種方式：
+  agent      與 Agent 相同：select_subject(scan, "batter")，選分數最高的人，再用 segment_batter 找揮棒
+  broadcast  排除身形最大的人（通常是投手），再從其餘人中選分數最高的，同樣用 segment_batter
+  timed      轉播改良：先從投手骨架找出手時間，只看出手後 0.15–0.75 秒；
+             其餘每個人中，雙手要同時快速移動、彼此靠近（握著球棒）、移動距離夠長，才算揮棒
+
+timed 的門檻是事先依揮棒的動作特性設定的，不是用評估片段調出來的；
+在同一批片段上比較只能說明改進的方向，要確認效果應換一批片段（--seed 或另一場比賽）再評估。
 """
 
 from __future__ import annotations
@@ -17,14 +22,24 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from ..vision.pose_scan import PoseScan
-from .keypoints import build_series
-from .subject import select_subject
+from .keypoints import KP, SubjectSeries, build_series
+from .segmentation import segment_pitcher
+from .subject import MIN_COVERAGE, select_subject
 from .swing import segment_batter
 
 LABELS_IN_ZIP = "mlb-youtube-master/data/mlb-youtube-segmented.json"
-STRATEGIES = ("agent", "broadcast")
+STRATEGIES = ("agent", "broadcast", "timed")
+STRATEGY_ZH = {"agent": "Agent 原本的規則（分數最高）", "broadcast": "轉播規則（排除最大的人）",
+               "timed": "轉播改良（出手時間＋雙手同步）"}
+
+# timed 策略的門檻（事先設定，見模組說明）
+SWING_WINDOW_S = (0.15, 0.75)   # 出手後的這段時間內找揮棒：球約 0.4–0.5 秒到本壘，揮棒約在擊球前 0.15 秒開始
+MIN_BOTH_HANDS_SPEED = 2.5      # 兩手中「較慢的那隻」也要達到這個速度（身高/秒）：只有一隻手動（捕手接球）不算
+MIN_HAND_TRAVEL = 0.35          # 雙手中點在時間窗內至少移動這麼遠（身高）：骨架抖動通常遠小於此值
+MAX_HAND_GAP = 0.3              # 速度最快時兩手腕距離不超過這個值（身高）：雙手握著同一支球棒
 
 
 def load_labels(path: str | Path) -> dict[str, dict]:
@@ -137,6 +152,57 @@ def detect_swings(scan: PoseScan, track_id: int | None) -> int:
     return len(segment_batter(series).cycles)
 
 
+def release_times(scan: PoseScan, pitcher_id: int) -> list[float]:
+    """投手的出手時間。分段找不到時，用手腕速度最快的時刻代替。"""
+    series = build_series(scan.tracks[pitcher_id], scan.times, scan.frame_indices)
+    cycles = segment_pitcher(series).cycles
+    if cycles:
+        return [c.times["release"] for c in cycles]
+    speed = series.max_speed("wrist")
+    return [float(series.times[int(np.nanargmax(speed))])] if np.isfinite(speed).any() else []
+
+
+def swing_signature(series: SubjectSeries, t0: float, t1: float) -> dict | None:
+    """時間窗內的揮棒特徵；資料不足時回傳 None。"""
+    m = (series.times >= t0) & (series.times <= t1)
+    if m.sum() < 3:
+        return None
+    lw, rw = series.pos[m, KP["l_wrist"]], series.pos[m, KP["r_wrist"]]
+    both = np.fmin(series.speed[m, KP["l_wrist"]], series.speed[m, KP["r_wrist"]])
+    if not np.isfinite(both).any():
+        return None
+    k = int(np.nanargmax(both))
+    hands = (lw + rw) / 2
+    ok = np.isfinite(hands).all(axis=1)
+    travel = float(np.max(np.linalg.norm(hands[ok] - hands[ok][0], axis=1))) / series.body_h if ok.sum() >= 2 else 0.0
+    gap = float(np.linalg.norm(lw[k] - rw[k])) / series.body_h
+    return {"both_speed": float(both[k]), "travel": travel, "gap": gap}
+
+
+def is_swing(sig: dict | None) -> bool:
+    return (sig is not None and sig["both_speed"] >= MIN_BOTH_HANDS_SPEED and sig["travel"] >= MIN_HAND_TRAVEL
+            and np.isfinite(sig["gap"]) and sig["gap"] <= MAX_HAND_GAP)
+
+
+def timed_detect(scan: PoseScan) -> tuple[int, int | None]:
+    """回傳 (有揮棒的投球數, 揮棒者的編號)。身形最大的人當作投手。"""
+    people = [t for t in scan.tracks.values() if t.coverage >= MIN_COVERAGE]
+    if len(people) < 2:
+        return 0, None
+    pitcher = max(people, key=lambda t: float(np.nanmedian(t.heights)))
+    others = [build_series(t, scan.times, scan.frame_indices) for t in people if t.track_id != pitcher.track_id]
+    swings, batter, best = 0, None, 0.0
+    for r in release_times(scan, pitcher.track_id):
+        hits = [(sig["travel"], s.track_id) for s in others
+                if is_swing(sig := swing_signature(s, r + SWING_WINDOW_S[0], r + SWING_WINDOW_S[1]))]
+        if hits:
+            swings += 1
+            travel, tid = max(hits)
+            if travel > best:
+                best, batter = travel, tid
+    return swings, batter
+
+
 @dataclass
 class ClipResult:
     clip_id: str
@@ -158,7 +224,8 @@ class ClipResult:
 def evaluate_clip(clip_id: str, entry: dict, scan: PoseScan) -> ClipResult:
     r = ClipResult(clip_id, entry["labels"], has_swing(entry), contact(entry), tracks=len(scan.tracks))
     r.picks = pick_batters(scan)
-    r.swings = {s: detect_swings(scan, r.picks[s]) for s in STRATEGIES}
+    r.swings = {s: detect_swings(scan, r.picks[s]) for s in ("agent", "broadcast")}
+    r.swings["timed"], r.picks["timed"] = timed_detect(scan)
     return r
 
 
@@ -202,15 +269,14 @@ def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
         "# MLB-YouTube 揮棒偵測評估",
         "",
         f"評估 {summary['evaluated']} 段片段（失敗 {summary['errors']} 段），其中有揮棒的占 {pct(summary['swing_share'])}。"
-        f"兩種策略選到同一個人的片段有 {summary['same_pick']} 段。",
+        f"Agent 原本的規則與轉播規則選到同一個人的片段有 {summary['same_pick']} 段。",
         "",
         "| 選打者的方式 | 準確率 | 精確率 | 召回率 | F1 | 擊中球的召回率 | 揮空的召回率 |",
         "|---|---|---|---|---|---|---|",
     ]
-    names = {"agent": "Agent 原本的規則（分數最高）", "broadcast": "轉播規則（排除最大的人）"}
     for s, v in summary["strategies"].items():
         a = v["all"]
-        lines.append(f"| {names[s]} | {pct(a['accuracy'])} | {pct(a['precision'])} | {pct(a['recall'])} | "
+        lines.append(f"| {STRATEGY_ZH[s]} | {pct(a['accuracy'])} | {pct(a['precision'])} | {pct(a['recall'])} | "
                      f"{pct(a['f1'])} | {pct(v['recall_contact'])} | {pct(v['recall_miss'])} |")
     lines += [
         "",
@@ -218,6 +284,8 @@ def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
         "- 精確率：說有揮棒的片段中，真的有揮棒的比例。投手的投球動作被誤當成揮棒時會降低。",
         "- 召回率：真的有揮棒的片段中，被偵測到的比例。",
         "- 擊中球／揮空：把有揮棒的片段再分成擊出或界外（碰到球）與揮空，看哪一種比較容易漏掉。",
+        "- 轉播改良的門檻是事先設定的；在同一批片段上比較只能看改進方向，"
+        "要確認效果請換一批片段（--seed 或另一場比賽）再評估。",
         "",
         "限制：轉播多是中外野視角、常有切換鏡頭與重播，與本專案設計的側拍差很多；"
         "標註的「swing」也包含半揮棒等判定，骨架不一定看得出來。這份數字只能說明在轉播畫面上的表現。",

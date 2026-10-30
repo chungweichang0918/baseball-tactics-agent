@@ -10,6 +10,7 @@ import pytest
 from synthetic import make_batter, make_pitcher, make_scan
 
 from bbagent.analysis import swing_eval as se
+from bbagent.analysis.keypoints import KP
 from bbagent.vision.pose_scan import PoseTrack
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -131,3 +132,47 @@ def test_script_runs_end_to_end(tmp_path, monkeypatch):
     assert summary["evaluated"] == 4                       # gameA 在測試集的 4 段
     assert (out / "results.csv").read_text(encoding="utf-8-sig").count("\n") == 5
     assert "MLB-YouTube 揮棒偵測評估" in (out / "summary.md").read_text(encoding="utf-8")
+
+
+def pad_to(track, k, n, track_id=None):
+    """把整條軌跡往後延 k 個取樣（前面補第一幀），再補到 n 個取樣。"""
+    def pad(a):
+        a = np.concatenate([np.repeat(a[:1], k, axis=0), a])[:n]
+        return np.concatenate([a, np.repeat(a[-1:], n - len(a), axis=0)])
+    return PoseTrack(track_id or track.track_id, pad(track.boxes), pad(track.conf), pad(track.kpts), pad(track.kconf))
+
+
+def scaled(track, factor, offset, track_id):
+    return PoseTrack(track_id, track.boxes * factor + offset, track.conf, track.kpts * factor + offset, track.kconf)
+
+
+def timed_scene(batter_swings=True):
+    """投手 3.6 秒出手；打者在出手後約 0.23 秒揮棒（或站著不動）；捕手在出手後 0.4 秒單手接球。"""
+    pitcher, _, frames, _ = make_pitcher(n_pitches=1, stride=2, track_id=1)
+    n = len(frames)
+    batter, _, bframes, _ = make_batter(n_swings=1, stride=2, track_id=2)
+    batter = pad_to(batter, 28, n)                                     # 擊球 2.9 秒 → 約 3.83 秒
+    if not batter_swings:
+        batter = pad_to(PoseTrack(2, batter.boxes[:1], batter.conf[:1], batter.kpts[:1], batter.kconf[:1]), 0, n)
+    catcher = pad_to(PoseTrack(3, batter.boxes[:1], batter.conf[:1], batter.kpts[:1].copy(), batter.kconf[:1]), 0, n)
+    t = frames / 60
+    u = np.clip((t - 4.0) / 0.15, 0, 1)[:, None]                         # 4.0–4.15 秒左手伸出接球
+    catcher.kpts[:, KP["l_wrist"]] += u * np.array([250.0, 0.0])
+    tracks = [pitcher, scaled(batter, 0.4, 300, 2), scaled(catcher, 0.4, 520, 3)]
+    return make_scan(tracks, frames)
+
+
+
+def test_timed_detects_batter_swing_after_release():
+    scan = timed_scene()
+    assert se.release_times(scan, 1) == [pytest.approx(3.6, abs=0.05)]
+    assert se.timed_detect(scan) == (1, 2)                              # 一次揮棒，揮棒者是打者
+    sig = se.swing_signature(se.build_series(scan.tracks[3], scan.times, scan.frame_indices), 3.75, 4.35)
+    assert sig["both_speed"] < se.MIN_BOTH_HANDS_SPEED and not se.is_swing(sig)  # 捕手只有一隻手動
+
+
+def test_timed_ignores_still_batter_and_catcher():
+    swings, batter = se.timed_detect(timed_scene(batter_swings=False))
+    assert swings == 0 and batter is None
+    r = se.evaluate_clip("A2", LABELS["A2"], timed_scene(batter_swings=False))
+    assert r.swings["timed"] == 0 and r.predicted("agent")              # 舊規則把投手的投球當成揮棒
