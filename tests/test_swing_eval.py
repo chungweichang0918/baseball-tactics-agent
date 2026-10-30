@@ -166,13 +166,29 @@ def timed_scene(batter_swings=True):
 def test_timed_detects_batter_swing_after_release():
     scan = timed_scene()
     assert se.release_times(scan, 1) == [pytest.approx(3.6, abs=0.05)]
-    assert se.timed_detect(scan) == (1, 2)                              # 一次揮棒，揮棒者是打者
+    found = se.timed_detect(scan)
+    assert (found.swings, found.batter, found.reason) == (1, 2, None)   # 一次揮棒，揮棒者是打者
+    assert found.best["travel"] >= se.MIN_HAND_TRAVEL and found.best["wrist_ok"] == 1.0
     sig = se.swing_signature(se.build_series(scan.tracks[3], scan.times, scan.frame_indices), 3.75, 4.35)
     assert sig["both_speed"] < se.MIN_BOTH_HANDS_SPEED and not se.is_swing(sig)  # 捕手只有一隻手動
 
 
 def test_timed_ignores_still_batter_and_catcher():
-    swings, batter = se.timed_detect(timed_scene(batter_swings=False))
-    assert swings == 0 and batter is None
+    still = se.timed_detect(timed_scene(batter_swings=False))
+    assert still.swings == 0 and still.batter is None and still.reason == "slow_hands"
+    r = se.evaluate_clip("A1", LABELS["A1"], timed_scene(batter_swings=False))
+    diag = se.timed_diagnosis([r])
+    assert diag["missed"] == 1 and diag["reasons"] == {"slow_hands": 1}
+    assert "兩隻手沒有同時快速移動：1 段" in se.summary_markdown(se.summarize([r]), [r])
     r = se.evaluate_clip("A2", LABELS["A2"], timed_scene(batter_swings=False))
     assert r.swings["timed"] == 0 and r.predicted("agent")              # 舊規則把投手的投球當成揮棒
+
+
+def test_failed_check_order():
+    base = {"track": 2, "both_speed": 3.0, "travel": 0.5, "gap": 0.1, "wrist_ok": 1.0}
+    assert se.failed_check(None) == "not_visible"
+    assert se.failed_check(base | {"both_speed": float("nan")}) == "no_wrists"
+    assert se.failed_check(base | {"both_speed": 1.0, "travel": 0.0}) == "slow_hands"   # 依序回報第一個沒過的
+    assert se.failed_check(base | {"travel": 0.1}) == "short_travel"
+    assert se.failed_check(base | {"gap": 0.6}) == "hands_apart"
+    assert se.failed_check(base) is None

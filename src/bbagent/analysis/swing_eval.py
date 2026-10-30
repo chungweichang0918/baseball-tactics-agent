@@ -162,45 +162,106 @@ def release_times(scan: PoseScan, pitcher_id: int) -> list[float]:
     return [float(series.times[int(np.nanargmax(speed))])] if np.isfinite(speed).any() else []
 
 
+REASON_ZH = {
+    "few_people": "可分析的人不到 2 個",
+    "no_release": "找不到投手出手時間",
+    "not_visible": "出手後的時間窗內沒有其他人（可能切換了鏡頭）",
+    "no_wrists": "時間窗內手腕骨架點缺漏（遠處的人信心太低）",
+    "slow_hands": "兩隻手沒有同時快速移動",
+    "short_travel": "雙手移動距離不夠",
+    "hands_apart": "兩手沒有靠在一起",
+}
+CHECKS = ("slow_hands", "short_travel", "hands_apart")
+
+
 def swing_signature(series: SubjectSeries, t0: float, t1: float) -> dict | None:
-    """時間窗內的揮棒特徵；資料不足時回傳 None。"""
+    """時間窗內的揮棒特徵；這個人不在時間窗內時回傳 None。
+
+    wrist_ok 是兩個手腕都有骨架點的取樣比例；兩手都沒有資料時 both_speed 為 NaN。
+    """
     m = (series.times >= t0) & (series.times <= t1)
-    if m.sum() < 3:
+    present = m & np.isfinite(series.energy)
+    if present.sum() < 3:
         return None
     lw, rw = series.pos[m, KP["l_wrist"]], series.pos[m, KP["r_wrist"]]
+    ok = np.isfinite(lw).all(axis=1) & np.isfinite(rw).all(axis=1)
+    sig = {"track": series.track_id, "both_speed": float("nan"), "travel": 0.0, "gap": float("nan"),
+           "wrist_ok": round(float(ok.sum() / m.sum()), 2)}
     both = np.fmin(series.speed[m, KP["l_wrist"]], series.speed[m, KP["r_wrist"]])
     if not np.isfinite(both).any():
-        return None
+        return sig
     k = int(np.nanargmax(both))
-    hands = (lw + rw) / 2
-    ok = np.isfinite(hands).all(axis=1)
-    travel = float(np.max(np.linalg.norm(hands[ok] - hands[ok][0], axis=1))) / series.body_h if ok.sum() >= 2 else 0.0
-    gap = float(np.linalg.norm(lw[k] - rw[k])) / series.body_h
-    return {"both_speed": float(both[k]), "travel": travel, "gap": gap}
+    hands = ((lw + rw) / 2)[ok]
+    sig["both_speed"] = round(float(both[k]), 2)
+    if len(hands) >= 2:
+        sig["travel"] = round(float(np.max(np.linalg.norm(hands - hands[0], axis=1))) / series.body_h, 3)
+    sig["gap"] = round(float(np.linalg.norm(lw[k] - rw[k])) / series.body_h, 3)
+    return sig
+
+
+def failed_check(sig: dict | None) -> str | None:
+    """依序檢查三個條件，回傳第一個沒通過的；全部通過回傳 None。"""
+    if sig is None:
+        return "not_visible"
+    if not np.isfinite(sig["both_speed"]):
+        return "no_wrists"
+    if sig["both_speed"] < MIN_BOTH_HANDS_SPEED:
+        return "slow_hands"
+    if sig["travel"] < MIN_HAND_TRAVEL:
+        return "short_travel"
+    if not (np.isfinite(sig["gap"]) and sig["gap"] <= MAX_HAND_GAP):
+        return "hands_apart"
+    return None
 
 
 def is_swing(sig: dict | None) -> bool:
-    return (sig is not None and sig["both_speed"] >= MIN_BOTH_HANDS_SPEED and sig["travel"] >= MIN_HAND_TRAVEL
-            and np.isfinite(sig["gap"]) and sig["gap"] <= MAX_HAND_GAP)
+    return failed_check(sig) is None
 
 
-def timed_detect(scan: PoseScan) -> tuple[int, int | None]:
-    """回傳 (有揮棒的投球數, 揮棒者的編號)。身形最大的人當作投手。"""
+def _closeness(sig: dict | None) -> tuple:
+    """離「判斷為揮棒」有多近：通過的檢查越多越近，同樣多時兩手速度越快越近。"""
+    fail = failed_check(sig)
+    passed = len(CHECKS) if fail is None else (CHECKS.index(fail) if fail in CHECKS else -1)
+    speed = sig["both_speed"] if sig is not None and np.isfinite(sig["both_speed"]) else -1.0
+    return passed, speed
+
+
+@dataclass
+class TimedResult:
+    swings: int                       # 判斷為有揮棒的投球數
+    batter: int | None                # 揮棒者的編號
+    releases: list[float] = field(default_factory=list)
+    reason: str | None = None         # 沒判斷成揮棒時，最接近通過的人卡在哪一關（REASON_ZH 的鍵）
+    best: dict | None = None          # 最接近通過的人的特徵值
+
+
+def timed_detect(scan: PoseScan) -> TimedResult:
+    """身形最大的人當作投手；在每次出手後的時間窗內，檢查其餘每個人有沒有揮棒。"""
     people = [t for t in scan.tracks.values() if t.coverage >= MIN_COVERAGE]
     if len(people) < 2:
-        return 0, None
+        return TimedResult(0, None, reason="few_people")
     pitcher = max(people, key=lambda t: float(np.nanmedian(t.heights)))
     others = [build_series(t, scan.times, scan.frame_indices) for t in people if t.track_id != pitcher.track_id]
-    swings, batter, best = 0, None, 0.0
-    for r in release_times(scan, pitcher.track_id):
-        hits = [(sig["travel"], s.track_id) for s in others
-                if is_swing(sig := swing_signature(s, r + SWING_WINDOW_S[0], r + SWING_WINDOW_S[1]))]
+    releases = release_times(scan, pitcher.track_id)
+    if not releases:
+        return TimedResult(0, None, reason="no_release")
+    result = TimedResult(0, None, releases=[round(r, 2) for r in releases])
+    best_hit = 0.0
+    for r in releases:
+        sigs = [swing_signature(s, r + SWING_WINDOW_S[0], r + SWING_WINDOW_S[1]) for s in others]
+        hits = [g for g in sigs if is_swing(g)]
         if hits:
-            swings += 1
-            travel, tid = max(hits)
-            if travel > best:
-                best, batter = travel, tid
-    return swings, batter
+            result.swings += 1
+            top = max(hits, key=lambda g: g["travel"])
+            if top["travel"] > best_hit:
+                best_hit, result.batter, result.best = top["travel"], top["track"], top
+        elif result.swings == 0:
+            closest = max(sigs, key=_closeness)
+            if result.best is None or _closeness(closest) > _closeness(result.best):
+                result.best = closest
+    if result.swings == 0:
+        result.reason = failed_check(result.best)
+    return result
 
 
 @dataclass
@@ -212,6 +273,7 @@ class ClipResult:
     tracks: int = 0
     picks: dict[str, int | None] = field(default_factory=dict)
     swings: dict[str, int] = field(default_factory=dict)
+    timed: dict = field(default_factory=dict)     # 轉播改良的診斷：出手時間、卡在哪一關、特徵值
     error: str | None = None
 
     def predicted(self, strategy: str) -> bool:
@@ -225,7 +287,9 @@ def evaluate_clip(clip_id: str, entry: dict, scan: PoseScan) -> ClipResult:
     r = ClipResult(clip_id, entry["labels"], has_swing(entry), contact(entry), tracks=len(scan.tracks))
     r.picks = pick_batters(scan)
     r.swings = {s: detect_swings(scan, r.picks[s]) for s in ("agent", "broadcast")}
-    r.swings["timed"], r.picks["timed"] = timed_detect(scan)
+    t = timed_detect(scan)
+    r.swings["timed"], r.picks["timed"] = t.swings, t.batter
+    r.timed = {"releases": t.releases, "reason": t.reason, "best": t.best}
     return r
 
 
@@ -258,7 +322,29 @@ def summarize(results: list[ClipResult]) -> dict:
             "recall_miss": confusion(results, s, lambda r: r.truth and not r.contact)["recall"],
         } for s in STRATEGIES},
         "same_pick": sum(r.picks.get("agent") == r.picks.get("broadcast") for r in ok),
+        "timed_diagnosis": timed_diagnosis(ok),
     }
+
+
+def _median(values: list[float]) -> float | None:
+    vals = [v for v in values if v is not None and np.isfinite(v)]
+    return round(float(np.median(vals)), 3) if vals else None
+
+
+def timed_diagnosis(results: list[ClipResult]) -> dict:
+    """轉播改良漏掉的揮棒卡在哪一關，以及有揮棒與沒揮棒片段的特徵值中位數。"""
+    missed = [r for r in results if r.truth and not r.predicted("timed")]
+    reasons: dict[str, int] = {}
+    for r in missed:
+        key = r.timed.get("reason") or "unknown"
+        reasons[key] = reasons.get(key, 0) + 1
+
+    def medians(rows):
+        best = [r.timed.get("best") or {} for r in rows]
+        return {k: _median([b.get(k) for b in best]) for k in ("both_speed", "travel", "gap", "wrist_ok")}
+
+    return {"missed": len(missed), "reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
+            "swing": medians([r for r in results if r.truth]), "no_swing": medians([r for r in results if not r.truth])}
 
 
 def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
@@ -290,6 +376,18 @@ def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
         "限制：轉播多是中外野視角、常有切換鏡頭與重播，與本專案設計的側拍差很多；"
         "標註的「swing」也包含半揮棒等判定，骨架不一定看得出來。這份數字只能說明在轉播畫面上的表現。",
     ]
+    diag = summary.get("timed_diagnosis")
+    if diag:
+        lines += ["", "## 轉播改良的診斷", "",
+                  f"漏掉的揮棒共 {diag['missed']} 段，最接近通過的人卡在：", ""]
+        lines += [f"- {REASON_ZH.get(k, k)}：{n} 段" for k, n in diag["reasons"].items()] or ["- （沒有漏掉）"]
+        lines += ["", "最接近通過的人的特徵值（中位數）：", "",
+                  "| | 兩手中較慢那隻的速度（身高/秒） | 雙手移動距離（身高） | 兩手距離（身高） | 手腕有骨架點的比例 |",
+                  "|---|---|---|---|---|"]
+        for key, name in (("swing", "有揮棒的片段"), ("no_swing", "沒揮棒的片段")):
+            m = diag[key]
+            lines.append(f"| {name} | {m['both_speed']} | {m['travel']} | {m['gap']} | {m['wrist_ok']} |")
+        lines += ["", f"目前的門檻：速度 ≥ {MIN_BOTH_HANDS_SPEED}、移動距離 ≥ {MIN_HAND_TRAVEL}、兩手距離 ≤ {MAX_HAND_GAP}。"]
     errors = [r for r in results if r.error]
     if errors:
         lines += ["", "## 失敗的片段", ""] + [f"- {r.clip_id}：{r.error}" for r in errors]

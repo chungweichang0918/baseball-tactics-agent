@@ -85,10 +85,14 @@ def cmd_run(args) -> int:
     with open(out_dir / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["clip_id", "labels", "truth_swing", "contact", "tracks"]
-                   + [f"{s}_{k}" for s in STRATEGIES for k in ("track", "swings", "correct")] + ["error"])
+                   + [f"{s}_{k}" for s in STRATEGIES for k in ("track", "swings", "correct")]
+                   + ["timed_releases", "timed_reason", "timed_both_speed", "timed_travel", "timed_gap",
+                      "timed_wrist_ok", "error"])
         for r in results:
             w.writerow([r.clip_id, "/".join(r.labels), r.truth, r.contact, r.tracks]
                        + [x for s in STRATEGIES for x in (r.picks.get(s), r.swings.get(s), r.predicted(s) == r.truth)]
+                       + [" ".join(map(str, r.timed.get("releases", []))), r.timed.get("reason") or ""]
+                       + [(r.timed.get("best") or {}).get(k, "") for k in ("both_speed", "travel", "gap", "wrist_ok")]
                        + [r.error or ""])
     print("\n" + summary_markdown(summary, results))
     return 0
