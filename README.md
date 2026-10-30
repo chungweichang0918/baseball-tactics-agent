@@ -188,7 +188,14 @@ uv run python scripts/eval_mlb_youtube.py run --labels ~/Downloads/mlb-youtube-m
 
 - 片段用 OpenCV 依標註自動切好（資料集附的切片腳本是 Python 2，無法直接使用），快取在 `cache/mlb_clips/`。
 - 抽樣時有揮棒與沒揮棒各半。
-- 比較三種方式：Agent 原本的規則（分數最高的人）、轉播規則（排除身形最大的人，也就是中外野視角下的投手），以及轉播改良：先從投手骨架找出手時間，只看出手後 0.15–0.75 秒，並要求雙手同時快速移動、彼此靠近、移動距離夠長。改良版的門檻是事先設定的，要確認效果請換一批片段（`--seed 1` 或另一場比賽）再評估。
+- 比較三種方式：Agent 原本的規則（分數最高的人）、轉播規則（排除身形最大的人，也就是中外野視角下的投手），以及轉播改良：先從投手骨架找出手時間，只看出手後 0.15–0.75 秒，並要求雙手同時快速移動、彼此靠近、移動距離夠長。改良版的門檻可以用 `calibrate` 在一場比賽上自動校正（試過所有門檻組合，選平衡準確率最高的），再用**另一場沒參與校正的比賽**驗證：
+
+```bash
+uv run python scripts/eval_mlb_youtube.py calibrate --labels ~/Downloads/mlb-youtube-master.zip --videos ~/mlb_games --only 91YyEVUeO8I
+uv run python scripts/eval_mlb_youtube.py run --labels ~/Downloads/mlb-youtube-master.zip --videos ~/mlb_games --only EX98PC6yuRk --limit 0 --thresholds runs/eval/mlb_youtube/<校正時間>/thresholds.json
+```
+
+校正用的比賽數字會偏樂觀，寫進報告的應該是驗證用那場的結果。
 - 結果在 `runs/eval/mlb_youtube/<時間>/`：`summary.md` 有準確率、精確率、召回率，以及「擊中球」與「揮空」分開的召回率；`results.csv` 是每段片段的結果。
 
 轉播是中外野視角、常有切換鏡頭，和本專案設計的側拍差很多，這份數字只代表轉播畫面上的表現。

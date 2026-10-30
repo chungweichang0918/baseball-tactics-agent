@@ -42,6 +42,33 @@ MIN_HAND_TRAVEL = 0.35          # 雙手中點在時間窗內至少移動這麼�
 MAX_HAND_GAP = 0.3              # 速度最快時兩手腕距離不超過這個值（身高）：雙手握著同一支球棒
 
 
+@dataclass(frozen=True)
+class Thresholds:
+    """timed 策略的三個門檻。預設是事先設定的值；calibrate 會在校正用的片段上挑出另一組。"""
+
+    min_speed: float = MIN_BOTH_HANDS_SPEED
+    min_travel: float = MIN_HAND_TRAVEL
+    max_gap: float = MAX_HAND_GAP
+    source: str = "事先設定"
+
+    def describe(self) -> str:
+        gap = "不限" if not np.isfinite(self.max_gap) else f"≤ {self.max_gap:g}"
+        return f"速度 ≥ {self.min_speed:g}、移動距離 ≥ {self.min_travel:g}、兩手距離 {gap}（{self.source}）"
+
+    def save(self, path: str | Path) -> None:
+        d = asdict(self) | {"max_gap": self.max_gap if np.isfinite(self.max_gap) else None}
+        Path(path).write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> Thresholds:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        return cls(d["min_speed"], d["min_travel"], float("inf") if d["max_gap"] is None else d["max_gap"],
+                   d.get("source", str(path)))
+
+
+DEFAULT_THRESHOLDS = Thresholds()
+
+
 def load_labels(path: str | Path) -> dict[str, dict]:
     """讀 mlb-youtube-segmented.json；也可以直接給下載的 mlb-youtube-master.zip。"""
     path = Path(path)
@@ -199,28 +226,28 @@ def swing_signature(series: SubjectSeries, t0: float, t1: float) -> dict | None:
     return sig
 
 
-def failed_check(sig: dict | None) -> str | None:
+def failed_check(sig: dict | None, th: Thresholds = DEFAULT_THRESHOLDS) -> str | None:
     """依序檢查三個條件，回傳第一個沒通過的；全部通過回傳 None。"""
     if sig is None:
         return "not_visible"
     if not np.isfinite(sig["both_speed"]):
         return "no_wrists"
-    if sig["both_speed"] < MIN_BOTH_HANDS_SPEED:
+    if sig["both_speed"] < th.min_speed:
         return "slow_hands"
-    if sig["travel"] < MIN_HAND_TRAVEL:
+    if sig["travel"] < th.min_travel:
         return "short_travel"
-    if not (np.isfinite(sig["gap"]) and sig["gap"] <= MAX_HAND_GAP):
+    if np.isfinite(th.max_gap) and not (np.isfinite(sig["gap"]) and sig["gap"] <= th.max_gap):
         return "hands_apart"
     return None
 
 
-def is_swing(sig: dict | None) -> bool:
-    return failed_check(sig) is None
+def is_swing(sig: dict | None, th: Thresholds = DEFAULT_THRESHOLDS) -> bool:
+    return failed_check(sig, th) is None
 
 
-def _closeness(sig: dict | None) -> tuple:
+def _closeness(sig: dict | None, th: Thresholds) -> tuple:
     """離「判斷為揮棒」有多近：通過的檢查越多越近，同樣多時兩手速度越快越近。"""
-    fail = failed_check(sig)
+    fail = failed_check(sig, th)
     passed = len(CHECKS) if fail is None else (CHECKS.index(fail) if fail in CHECKS else -1)
     speed = sig["both_speed"] if sig is not None and np.isfinite(sig["both_speed"]) else -1.0
     return passed, speed
@@ -235,33 +262,52 @@ class TimedResult:
     best: dict | None = None          # 最接近通過的人的特徵值
 
 
-def timed_detect(scan: PoseScan) -> TimedResult:
-    """身形最大的人當作投手；在每次出手後的時間窗內，檢查其餘每個人有沒有揮棒。"""
+@dataclass
+class TimedFeatures:
+    """與門檻無關的部分：出手時間，以及每次出手後其餘每個人的揮棒特徵。只需算一次，校正時重複使用。"""
+
+    releases: list[float] = field(default_factory=list)
+    windows: list[list[dict | None]] = field(default_factory=list)   # [出手][人]
+    reason: str | None = None                                          # few_people／no_release
+
+
+def timed_features(scan: PoseScan) -> TimedFeatures:
+    """身形最大的人當作投手；在每次出手後的時間窗內，算出其餘每個人的揮棒特徵。"""
     people = [t for t in scan.tracks.values() if t.coverage >= MIN_COVERAGE]
     if len(people) < 2:
-        return TimedResult(0, None, reason="few_people")
+        return TimedFeatures(reason="few_people")
     pitcher = max(people, key=lambda t: float(np.nanmedian(t.heights)))
     others = [build_series(t, scan.times, scan.frame_indices) for t in people if t.track_id != pitcher.track_id]
     releases = release_times(scan, pitcher.track_id)
     if not releases:
-        return TimedResult(0, None, reason="no_release")
-    result = TimedResult(0, None, releases=[round(r, 2) for r in releases])
+        return TimedFeatures(reason="no_release")
+    windows = [[swing_signature(s, r + SWING_WINDOW_S[0], r + SWING_WINDOW_S[1]) for s in others] for r in releases]
+    return TimedFeatures([round(r, 2) for r in releases], windows)
+
+
+def timed_decide(f: TimedFeatures, th: Thresholds = DEFAULT_THRESHOLDS) -> TimedResult:
+    if f.reason:
+        return TimedResult(0, None, reason=f.reason)
+    result = TimedResult(0, None, releases=f.releases)
     best_hit = 0.0
-    for r in releases:
-        sigs = [swing_signature(s, r + SWING_WINDOW_S[0], r + SWING_WINDOW_S[1]) for s in others]
-        hits = [g for g in sigs if is_swing(g)]
+    for sigs in f.windows:
+        hits = [g for g in sigs if is_swing(g, th)]
         if hits:
             result.swings += 1
             top = max(hits, key=lambda g: g["travel"])
             if top["travel"] > best_hit:
                 best_hit, result.batter, result.best = top["travel"], top["track"], top
-        elif result.swings == 0:
-            closest = max(sigs, key=_closeness)
-            if result.best is None or _closeness(closest) > _closeness(result.best):
+        elif result.swings == 0 and sigs:
+            closest = max(sigs, key=lambda g: _closeness(g, th))
+            if result.best is None or _closeness(closest, th) > _closeness(result.best, th):
                 result.best = closest
     if result.swings == 0:
-        result.reason = failed_check(result.best)
+        result.reason = failed_check(result.best, th)
     return result
+
+
+def timed_detect(scan: PoseScan, th: Thresholds = DEFAULT_THRESHOLDS) -> TimedResult:
+    return timed_decide(timed_features(scan), th)
 
 
 @dataclass
@@ -275,22 +321,64 @@ class ClipResult:
     swings: dict[str, int] = field(default_factory=dict)
     timed: dict = field(default_factory=dict)     # 轉播改良的診斷：出手時間、卡在哪一關、特徵值
     error: str | None = None
+    features: TimedFeatures | None = field(default=None, repr=False)   # 校正用，不寫進結果檔
+
+    def apply_thresholds(self, th: Thresholds) -> None:
+        """用另一組門檻重新判斷轉播改良（不重算特徵）。"""
+        if self.features is None:
+            return
+        t = timed_decide(self.features, th)
+        self.swings["timed"], self.picks["timed"] = t.swings, t.batter
+        self.timed = {"releases": t.releases, "reason": t.reason, "best": t.best}
 
     def predicted(self, strategy: str) -> bool:
         return self.swings.get(strategy, 0) > 0
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("features")
+        return d
 
 
-def evaluate_clip(clip_id: str, entry: dict, scan: PoseScan) -> ClipResult:
+def evaluate_clip(clip_id: str, entry: dict, scan: PoseScan, th: Thresholds = DEFAULT_THRESHOLDS) -> ClipResult:
     r = ClipResult(clip_id, entry["labels"], has_swing(entry), contact(entry), tracks=len(scan.tracks))
     r.picks = pick_batters(scan)
     r.swings = {s: detect_swings(scan, r.picks[s]) for s in ("agent", "broadcast")}
-    t = timed_detect(scan)
-    r.swings["timed"], r.picks["timed"] = t.swings, t.batter
-    r.timed = {"releases": t.releases, "reason": t.reason, "best": t.best}
+    r.features = timed_features(scan)
+    r.apply_thresholds(th)
     return r
+
+
+SPEED_GRID = [round(1.0 + 0.1 * i, 1) for i in range(21)]                 # 1.0–3.0
+TRAVEL_GRID = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35]
+GAP_GRID = [0.1, 0.15, 0.2, 0.25, 0.3, 0.4, float("inf")]
+
+
+def balanced_accuracy(m: dict) -> float:
+    """召回率與「沒揮棒判斷正確率」的平均；不受有揮棒比例影響。"""
+    pos, neg = m["tp"] + m["fn"], m["tn"] + m["fp"]
+    if not pos or not neg:
+        return 0.0
+    return (m["tp"] / pos + m["tn"] / neg) / 2
+
+
+def calibrate(results: list[ClipResult], source: str) -> tuple[Thresholds, dict]:
+    """在校正用的片段上試過所有門檻組合，選平衡準確率最高的；同分時選 F1 較高、速度門檻較高（較保守）的。"""
+    ok = [r for r in results if r.error is None and r.features is not None]
+    best_key, best_th, best_m = None, DEFAULT_THRESHOLDS, {}
+    for speed in SPEED_GRID:
+        for travel in TRAVEL_GRID:
+            for gap in GAP_GRID:
+                th = Thresholds(speed, travel, gap, source)
+                for r in ok:
+                    r.apply_thresholds(th)
+                m = confusion(ok, "timed")
+                key = (round(balanced_accuracy(m), 4), m["f1"] or 0.0, speed, travel, -gap)
+                if best_key is None or key > best_key:
+                    best_key, best_th, best_m = key, th, m
+    for r in ok:
+        r.apply_thresholds(best_th)
+    return best_th, best_m | {"balanced_accuracy": round(balanced_accuracy(best_m), 3)}
 
 
 def confusion(results: list[ClipResult], strategy: str, only=None) -> dict:
@@ -347,7 +435,7 @@ def timed_diagnosis(results: list[ClipResult]) -> dict:
             "swing": medians([r for r in results if r.truth]), "no_swing": medians([r for r in results if not r.truth])}
 
 
-def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
+def summary_markdown(summary: dict, results: list[ClipResult], th: Thresholds = DEFAULT_THRESHOLDS) -> str:
     def pct(x):
         return "—" if x is None else f"{x:.1%}"
 
@@ -370,8 +458,8 @@ def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
         "- 精確率：說有揮棒的片段中，真的有揮棒的比例。投手的投球動作被誤當成揮棒時會降低。",
         "- 召回率：真的有揮棒的片段中，被偵測到的比例。",
         "- 擊中球／揮空：把有揮棒的片段再分成擊出或界外（碰到球）與揮空，看哪一種比較容易漏掉。",
-        "- 轉播改良的門檻是事先設定的；在同一批片段上比較只能看改進方向，"
-        "要確認效果請換一批片段（--seed 或另一場比賽）再評估。",
+        f"- 轉播改良的門檻：{th.describe()}。用來校正門檻的片段，數字會偏樂觀；"
+        "要寫進報告，請用沒參與校正的比賽評估。",
         "",
         "限制：轉播多是中外野視角、常有切換鏡頭與重播，與本專案設計的側拍差很多；"
         "標註的「swing」也包含半揮棒等判定，骨架不一定看得出來。這份數字只能說明在轉播畫面上的表現。",
@@ -387,7 +475,7 @@ def summary_markdown(summary: dict, results: list[ClipResult]) -> str:
         for key, name in (("swing", "有揮棒的片段"), ("no_swing", "沒揮棒的片段")):
             m = diag[key]
             lines.append(f"| {name} | {m['both_speed']} | {m['travel']} | {m['gap']} | {m['wrist_ok']} |")
-        lines += ["", f"目前的門檻：速度 ≥ {MIN_BOTH_HANDS_SPEED}、移動距離 ≥ {MIN_HAND_TRAVEL}、兩手距離 ≤ {MAX_HAND_GAP}。"]
+        lines += ["", f"目前的門檻：{th.describe()}。"]
     errors = [r for r in results if r.error]
     if errors:
         lines += ["", "## 失敗的片段", ""] + [f"- {r.clip_id}：{r.error}" for r in errors]

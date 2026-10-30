@@ -125,7 +125,8 @@ def test_script_runs_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "run_pose_scan", lambda *a, **k: (scan, True))
     monkeypatch.setattr(mod, "project_path", lambda p: tmp_path / p)
 
-    args = Namespace(labels=str(labels), videos=str(videos), subset="testing", limit=None, seed=0, no_cache=False)
+    args = Namespace(labels=str(labels), videos=str(videos), subset="testing", limit=None, seed=0, no_cache=False,
+                     only=None, thresholds=None)
     assert mod.cmd_run(args) == 0
     out = next((tmp_path / "runs" / "eval" / "mlb_youtube").iterdir())
     summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
@@ -192,3 +193,43 @@ def test_failed_check_order():
     assert se.failed_check(base | {"travel": 0.1}) == "short_travel"
     assert se.failed_check(base | {"gap": 0.6}) == "hands_apart"
     assert se.failed_check(base) is None
+
+
+def test_thresholds_roundtrip(tmp_path):
+    th = se.Thresholds(1.8, 0.1, float("inf"), "測試")
+    th.save(tmp_path / "t.json")
+    back = se.Thresholds.load(tmp_path / "t.json")
+    assert back == th and "兩手距離 不限" in back.describe()
+    assert se.failed_check({"track": 1, "both_speed": 2.0, "travel": 0.2, "gap": 0.9, "wrist_ok": 1.0}, th) is None
+
+
+def scene_for(path):
+    """依片段 id 給不同的合成畫面：A1、A3 有揮棒，A2、A4 沒揮棒。"""
+    return timed_scene(batter_swings=Path(path).stem in ("A1", "A3"))
+
+
+def test_calibrate_separates_swings():
+    results = [se.evaluate_clip(cid, LABELS[cid], scene_for(f"{cid}.mp4")) for cid in ("A1", "A2", "A3", "A4")]
+    th, m = se.calibrate(results, "測試")
+    assert m["balanced_accuracy"] == 1.0 and th.source == "測試"
+    assert [r.predicted("timed") for r in results] == [True, False, True, False]   # 校正後套用到每段
+
+
+def test_calibrate_then_validate_script(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("eval_mlb_youtube", ROOT / "scripts" / "eval_mlb_youtube.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    videos = tmp_path / "games"
+    videos.mkdir()
+    write_counter_video(videos / "gameA.mp4", seconds=14)
+    labels = tmp_path / "seg.json"
+    labels.write_text(json.dumps(LABELS), encoding="utf-8")
+    monkeypatch.setattr(mod, "run_pose_scan", lambda path, *a, **k: (scene_for(path), True))
+    monkeypatch.setattr(mod, "project_path", lambda p: tmp_path / p)
+    base = dict(labels=str(labels), videos=str(videos), subset="testing", limit=0, seed=0, no_cache=False)
+
+    assert mod.cmd_calibrate(Namespace(**base, only=["gameA"])) == 0
+    saved = next((tmp_path / "runs" / "eval" / "mlb_youtube").glob("*/thresholds.json"))
+    assert "gameA" in se.Thresholds.load(saved).source
+    assert mod.cmd_run(Namespace(**base, only=["gameB"], thresholds=None)) == 1      # gameB 沒有下載
+    assert mod.cmd_run(Namespace(**base, only=["gameA"], thresholds=str(saved))) == 0
