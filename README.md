@@ -176,6 +176,23 @@ uv run python scripts/run_agent.py data/samples/b_side_01.mp4 --target batter --
 
 軌跡圖會出現在介面的「關鍵幀」分頁。球在手機影片中常常只有幾個像素，找不到軌跡是正常的，Agent 會退回固定 0.42 秒飛行時間的估計。
 
+## 揮棒偵測評估（MLB-YouTube）
+
+用 [MLB-YouTube 資料集](https://github.com/piergiaj/mlb-youtube)（Piergiovanni & Ryoo, 2018）的標註，量測打者揮棒偵測在 MLB 轉播畫面上的準確度。資料集只有標註，影片要自己取得；這些是 MLB 轉播畫面，有版權，只下載少量做自己的測試，**不要放進 repo**（`cache/`、`runs/` 已在 `.gitignore`）。
+
+```bash
+uv run python scripts/eval_mlb_youtube.py plan --labels ~/Downloads/mlb-youtube-master.zip --games 2
+# 把列出的整場比賽存成 <YouTube影片id>.mp4，放在同一個資料夾
+uv run python scripts/eval_mlb_youtube.py run --labels ~/Downloads/mlb-youtube-master.zip --videos ~/mlb_games --limit 40
+```
+
+- 片段用 OpenCV 依標註自動切好（資料集附的切片腳本是 Python 2，無法直接使用），快取在 `cache/mlb_clips/`。
+- 抽樣時有揮棒與沒揮棒各半。
+- 比較兩種選打者的方式：Agent 原本的規則（分數最高的人），以及轉播規則（排除身形最大的人，也就是中外野視角下的投手）。
+- 結果在 `runs/eval/mlb_youtube/<時間>/`：`summary.md` 有準確率、精確率、召回率，以及「擊中球」與「揮空」分開的召回率；`results.csv` 是每段片段的結果。
+
+轉播是中外野視角、常有切換鏡頭，和本專案設計的側拍差很多，這份數字只代表轉播畫面上的表現。
+
 ## Colab
 
 `notebooks/colab_demo.ipynb` 是作業繳交用的教材式筆記本：一段說明配一小格程式，依序展示偵察 → Planner（含計畫檢查）→ Tool Use → Synthesizer → Critic（含注入錯誤的規則檢查），再介紹設計模式與參考文獻，最後才用 `run_agent()` 串起全部並啟動 Gradio 工作台。
