@@ -9,6 +9,7 @@ from pathlib import Path
 import cv2
 
 from ..analysis.segmentation import PHASE_ZH
+from ..analysis.statcast import fmt_value
 from ..analysis.swing import SWING_PHASE_ZH
 from ..schemas import GameState
 from ..tools.re24 import BaseOutState, get_re24
@@ -102,8 +103,7 @@ def statcast_panel(info: dict | None) -> str:
             if x is None:
                 cards.append(card(v["label"], "—", "", "這一球沒有此數據"))
                 continue
-            shown = f"{x:.3f}" if abs(x) < 1 else f"{x:.0f}" if abs(x) >= 100 else f"{x:.1f}"
-            cards.append(card(v["label"], shown, v["unit"], v["source"]))
+            cards.append(card(v["label"], fmt_value(x), v["unit"], v["source"]))
         html.append(f'<div class="section-heading">{escape(title)}</div><div class="metrics">{"".join(cards)}</div>')
     html.append('<p class="evidence-note">這一球由你從候選清單確認；影片本身無法證明兩者是同一球。'
                 '「影片粗估」的球速請以這裡的 Statcast 數值為準。</p>')

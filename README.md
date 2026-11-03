@@ -230,7 +230,9 @@ uv run python scripts/eval_mlb_youtube.py run --labels ~/Downloads/mlb-youtube-m
 
 ## Colab
 
-`notebooks/colab_demo.ipynb` 是作業繳交用的教材式筆記本：一段說明配一小格程式，依序展示偵察 → Planner（含計畫檢查）→ Tool Use → Synthesizer → Critic（含注入錯誤的規則檢查），再介紹設計模式與參考文獻，最後才用 `run_agent()` 串起全部並啟動 Gradio 工作台。
+**繳交版**：`notebooks/submission.ipynb`（[在 Colab 開啟](https://colab.research.google.com/github/chungweichang0918/baseball-tactics-agent/blob/main/notebooks/submission.ipynb)）。全部執行就會從 Google Drive 下載示範影片與 Statcast CSV，只分析投球的那一個鏡頭，開出 Gradio 工作台，並把 Gradio 背後同一個函式的結果（執行紀錄、計畫、關鍵幀、報告）與 Reflection 示範留在筆記本裡。結尾附揮棒偵測評估與心得。
+
+`notebooks/colab_demo.ipynb` 是教材式筆記本：一段說明配一小格程式，依序展示偵察 → Planner（含計畫檢查）→ Tool Use → Synthesizer → Critic（含注入錯誤的規則檢查），再介紹設計模式與參考文獻，最後才用 `run_agent()` 串起全部並啟動 Gradio 工作台。
 
 - 預設從本專案的 GitHub repo 取得程式碼；也可以改用公開的 Drive 連結或自己的 Drive。
 - 金鑰放在 Colab 的 Secrets（`GEMINI_API_KEY`），不要寫在筆記本裡；沒有金鑰也能跑完（Gemini 步驟改用預設流程）。

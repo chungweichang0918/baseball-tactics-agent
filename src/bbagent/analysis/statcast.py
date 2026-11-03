@@ -140,6 +140,13 @@ def candidates(pitches: list[Pitch], game, limit: int = 30) -> list[tuple[Pitch,
     return scored[:limit]
 
 
+def fmt_value(x: float) -> str:
+    """CSV 原始精度不一（例如 -0.0655138）；報告保留到有意義的位數，mph、rpm 與原值一致。"""
+    if abs(x) >= 100:
+        return f"{x:.0f}"
+    return f"{x:.1f}" if abs(x) >= 10 else f"{x:.3f}".rstrip("0").rstrip(".")
+
+
 def evidence_lines(info: dict) -> list[str]:
     """給 Agent 的證據摘要：有的數值附單位與來源，沒有的列成一行，避免模型自己補數字。"""
     have = [v for v in info["values"] if v["value"] is not None]
@@ -149,7 +156,7 @@ def evidence_lines(info: dict) -> list[str]:
     lines = [f"使用者確認的對應球：{info['label']}"]
     if result:
         lines.append(f"這一球的結果（Statcast 紀錄）：{result}")
-    lines += [f"{v['label']} {v['value']:g} {v['unit']}（{v['source']}）".replace("  ", " ") for v in have]
+    lines += [f"{v['label']} {fmt_value(v['value'])} {v['unit']}（{v['source']}）".replace("  ", " ") for v in have]
     if missing:
         lines.append(f"這一球沒有的數據：{'、'.join(missing)}")
     lines.append("※ 對應關係由使用者從 CSV 候選清單確認，影片本身無法證明是同一球；只有 1 球，不能推論成投手或打者的習慣")
@@ -160,7 +167,7 @@ def pitch_markdown(info: dict | None) -> str:
     """報告用：一球的 Statcast 數據表，每列標示來源。"""
     if not info:
         return ""
-    rows = [f"| {v['label']} | {v['value']:g} {v['unit']} | {v['source']} |"
+    rows = [f"| {v['label']} | {fmt_value(v['value'])} {v['unit']} | {v['source']} |"
             for v in info["values"] if v["value"] is not None]
     table = "\n".join(["| 項目 | 數值 | 來源 |", "|---|---|---|", *rows]) if rows else "這一球的 CSV 沒有進階數據欄位。"
     return (f"## 逐球數據（使用者匯入的 Statcast CSV）\n\n對應的那一球：{info['label']}\n\n"
