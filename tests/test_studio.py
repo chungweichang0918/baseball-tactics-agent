@@ -45,6 +45,26 @@ def test_timeline_uses_source_time_and_preserves_branches():
     assert [(r[0], r[1]) for r in rows] == [(12.6, "打擊"), (12.9, "投球")]
 
 
+def test_timeline_note_only_on_first_row_of_each_cycle():
+    p = RunView()
+    result(p, "segment_motions", {"cycles": [
+        {"index": 1, "times": {"release": 2.4, "first_move": 1.2, "set": None}, "warnings": ["無法判定前腳著地"]},
+        {"index": 2, "times": {"release": 6.0, "first_move": 5.1}, "warnings": []}]})
+    rows = timeline_rows({"pitcher": p})
+    assert [(r[0], r[4]) for r in rows] == [(1.2, "無法判定前腳著地"), (2.4, ""), (5.1, "候選動作"), (6.0, "")]
+
+
+def test_theme_keeps_tables_dark_in_light_mode():
+    from bbagent.ui.workspace import PALETTE, studio_theme
+
+    theme = studio_theme()
+    for name in ("table_even_background_fill", "table_odd_background_fill", "background_fill_primary",
+                 "input_background_fill"):
+        light, dark = getattr(theme, name), getattr(theme, f"{name}_dark")
+        assert light == dark and light.startswith("#") and light.lower() not in ("#ffffff", "#fff")
+    assert theme.body_background_fill == PALETTE["bg"]
+
+
 @pytest.mark.parametrize("scenario", ["ground", "fly", "bunt"])
 def test_simulation_valid_svg_and_progress(scenario):
     first = field_board(scenario, "standard", 0, ["1"])

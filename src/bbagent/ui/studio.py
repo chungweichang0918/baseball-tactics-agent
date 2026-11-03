@@ -81,15 +81,18 @@ def identity_warning(views: dict[str, RunView]) -> str:
 
 
 def timeline_rows(views: dict[str, RunView], offset: float = 0) -> list:
+    """每個動作階段一列；同一球（或同一次揮棒）的警告只放在它最早的那一列，避免每列重複同一段長文字。"""
     rows = []
     for focus, view in views.items():
         seg = evidence_data(view, "segment_motions")
         labels = PHASE_ZH if focus == "pitcher" else SWING_PHASE_ZH
+        branch = "投球" if focus == "pitcher" else "打擊"
         for cycle in seg.get("cycles", []):
-            for phase, timestamp in cycle.get("times", {}).items():
-                if timestamp is not None:
-                    rows.append([round(offset + timestamp, 3), "投球" if focus == "pitcher" else "打擊",
-                                 cycle["index"], labels.get(phase, phase), "；".join(cycle.get("warnings", [])) or "候選動作"])
+            note = "；".join(cycle.get("warnings", [])) or "候選動作"
+            stamps = sorted((t, phase) for phase, t in cycle.get("times", {}).items() if t is not None)
+            for k, (timestamp, phase) in enumerate(stamps):
+                rows.append([round(offset + timestamp, 3), branch, cycle["index"], labels.get(phase, phase),
+                             note if k == 0 else ""])
     return sorted(rows, key=lambda row: row[0])
 
 

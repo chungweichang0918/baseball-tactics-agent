@@ -28,6 +28,46 @@ HEADER = '''<div class="studio-header"><div class="brand"><div class="brand-mark
 DEFAULT_GAME = (7, "bottom", 1, ["1"], 0, 0, 0, "offense", "auto", "", "", "")
 
 
+PALETTE = {"bg": "#0d1519", "block": "#142025", "raised": "#1a282d", "input": "#101b1f", "border": "#29373b",
+           "text": "#e8eeea", "subdued": "#9baaa5", "label": "#afbeb5", "accent": "#c8f36b", "accent_soft": "#263a29"}
+
+
+def studio_theme() -> gr.themes.Base:
+    """深色主題。淺色與深色模式都設成同一組顏色，表格、檔案列表這類內建元件才不會在淺色模式下變白。"""
+    c = PALETTE
+    values = {
+        "body_background_fill": c["bg"], "body_text_color": c["text"], "body_text_color_subdued": c["subdued"],
+        "background_fill_primary": c["block"], "background_fill_secondary": c["raised"],
+        "border_color_primary": c["border"], "border_color_accent": c["accent"], "border_color_accent_subdued": "#56713f",
+        "color_accent": c["accent"], "color_accent_soft": c["accent_soft"], "code_background_fill": c["input"],
+        "link_text_color": "#d1ef9b", "link_text_color_hover": "#e6ffb8", "link_text_color_visited": "#d1ef9b",
+        "block_background_fill": c["block"], "block_border_color": c["border"], "block_label_background_fill": c["block"],
+        "block_label_border_color": c["border"], "block_label_text_color": c["label"], "block_title_text_color": "#e8eee6",
+        "block_info_text_color": c["subdued"], "panel_background_fill": c["block"], "panel_border_color": c["border"],
+        "accordion_text_color": "#c9d6cb", "stat_background_fill": c["accent_soft"],
+        "input_background_fill": c["input"], "input_background_fill_focus": c["input"], "input_background_fill_hover": c["input"],
+        "input_border_color": "#344346", "input_border_color_focus": "#7e9b58", "input_border_color_hover": "#46594d",
+        "input_placeholder_color": "#6f817a",
+        "table_even_background_fill": c["block"], "table_odd_background_fill": "#17262b",
+        "table_border_color": c["border"], "table_text_color": "#dbe5dc",
+        "checkbox_background_color": c["input"], "checkbox_background_color_selected": c["accent"],
+        "checkbox_border_color": "#56695e", "checkbox_border_color_selected": c["accent"],
+        "checkbox_label_background_fill": "#1b2b2d", "checkbox_label_background_fill_hover": "#223538",
+        "checkbox_label_background_fill_selected": "#30442c", "checkbox_label_border_color": "#3b4e43",
+        "checkbox_label_border_color_selected": "#7e9b58", "checkbox_label_text_color": "#c7d6c7",
+        "checkbox_label_text_color_selected": "#e0f5be",
+        "button_primary_background_fill": c["accent"], "button_primary_background_fill_hover": "#d9ff8c",
+        "button_primary_text_color": "#172119", "button_primary_border_color": c["accent"],
+        "button_secondary_background_fill": "#213136", "button_secondary_background_fill_hover": "#2a4143",
+        "button_secondary_text_color": "#e6eee6", "button_secondary_border_color": "#354846",
+        "slider_color": c["accent"], "loader_color": c["accent"],
+        "error_background_fill": "#3a1f1f", "error_border_color": "#7a3a3a", "error_text_color": "#ffd9d6",
+    }
+    theme = gr.themes.Base(primary_hue="lime", neutral_hue="slate", font=["Segoe UI", "Microsoft JhengHei", "sans-serif"])
+    allowed = _supported(theme.set, **values, **{f"{k}_dark": v for k, v in values.items()})
+    return theme.set(**allowed)
+
+
 def runs_root() -> Path:
     return project_path(load_config()["paths"]["runs"])
 
@@ -73,7 +113,7 @@ def upload_video(path):
     if meta.duration_s > 60:
         info += "\n\n已選取前 60 秒；可在片段設定改選其他區間。"
     return (gr.update(value=path, visible=True), info, 0, round(min(meta.duration_s, 60), 3),
-            gr.update(choices=shots, value=None), gr.update(maximum=meta.duration_s, value=0), frame_at(path, 0))
+            gr.update(choices=shots, value=None), gr.update(maximum=round(meta.duration_s, 2), value=0), frame_at(path, 0))
 
 
 def select_shot(value):
@@ -198,7 +238,7 @@ def analyze_workspace(video, start, end, mode, pitcher_id, batter_id, *args):
 
 def build_workspace():
     from .app import CSS
-    theme = gr.themes.Base(primary_hue="lime", neutral_hue="slate", font=["Segoe UI", "Microsoft JhengHei", "sans-serif"])
+    theme = studio_theme()
     with gr.Blocks(**_supported(gr.Blocks.__init__, title="Diamond Studio · 棒球戰術研究室", css=CSS, theme=theme,
                               analytics_enabled=False)) as demo:
         gr.HTML(HEADER)
@@ -256,7 +296,7 @@ def build_workspace():
                         gr.Markdown("球場為手動情境預覽，可至 **守備模擬** 調整球路與回放進度。", elem_classes="helper")
                         quality = gr.Markdown(identity_warning({}), elem_id="quality-note")
                         with gr.Accordion("動作時間軸與逐幀預覽", open=False):
-                            timeline = gr.Dataframe(headers=["原片秒數", "分支", "動作", "階段", "備註"], datatype=["number", "str", "number", "str", "str"], value=[], interactive=False, type="array", label="點選動作跳到對應畫面")
+                            timeline = gr.Dataframe(headers=["原片秒數", "分支", "動作", "階段", "備註"], datatype=["number", "str", "number", "str", "str"], value=[], interactive=False, type="array", label="點選動作跳到對應畫面", elem_id="timeline")
                             scrub = gr.Slider(0, 15, step=.01, value=0, label="原影片時間（秒）")
                             frame = gr.Image(label="對照原始畫面", interactive=False, height=330)
                     with gr.Tab("投球分析", id="pitcher"):
@@ -288,7 +328,7 @@ def build_workspace():
                         simulation = gr.Markdown(simulation_summary(make_game(*DEFAULT_GAME), "ground", "standard"))
                     with gr.Tab("分析報告", id="report"):
                         report = gr.Markdown("### 讓證據串起每一個判斷\n\n上傳影片並開始分析後，投球與打擊報告會顯示於此。\n\n每個分支保留獨立報告、關鍵幀與審查紀錄。", elem_id="report-body")
-                        files = gr.File(label="下載報告與執行紀錄", file_count="multiple", interactive=False)
+                        files = gr.File(label="下載報告與執行紀錄", file_count="multiple", interactive=False, elem_id="downloads")
                         with gr.Accordion("證據與審查歷程", open=False):
                             reviews = gr.Markdown("尚未開始審查")
                     with gr.Tab("執行紀錄", id="process"):

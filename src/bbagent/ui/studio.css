@@ -26,3 +26,18 @@ button:focus-visible,a:focus-visible{outline:2px solid #d4fa92!important;outline
 @media(max-width:1000px){.gradio-container{padding:20px!important}.studio-intro{align-items:start;flex-direction:column}.workflow{margin-top:0}.overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}#controls{max-width:none}.studio-intro h1{font-size:26px}}
 @media(max-width:650px){.gradio-container{padding:14px!important}.header-label{display:none}.studio-header{padding-bottom:16px}.studio-intro{padding:10px 0 15px}.studio-intro h1{font-size:24px}#studio-layout{flex-direction:column}#controls,#workspace{width:100%!important;min-width:0!important}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metrics:not(.overview-metrics) .metric:last-child{grid-column:1/-1}.metric{padding:14px}.metric-value{font-size:25px}.field-heading{padding:13px}.field-legend{gap:10px;flex-wrap:wrap}.workflow{font-size:10px}.brand strong{font-size:15px}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* 表格、檔案列表、捲軸：與工作台同色系（底色由 workspace.studio_theme 設定，這裡只補細節） */
+.gradio-container table.file-preview tr.file{transition:background .15s}
+.gradio-container table.file-preview tr.file:hover{background:#1f3134!important}
+.gradio-container table.file-preview a,.gradio-container table.file-preview .download{color:#d1ef9b!important}
+#timeline table{font-size:12px}#timeline th{color:#c9d8c4!important;font-weight:600;letter-spacing:.5px}
+#timeline .body-cell{color:#dbe5dc!important}#timeline .virtual-row:hover{background:#1f3134!important}
+#downloads{background:transparent!important}
+*{scrollbar-color:#36483f #0d1519;scrollbar-width:thin}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:#0d1519}
+::-webkit-scrollbar-thumb{background:#36483f;border-radius:6px;border:2px solid #0d1519}::-webkit-scrollbar-thumb:hover{background:#4a6152}
+/* 左側控制欄在寬螢幕上固定，往下看報告時不用捲回頂端 */
+/* Gradio 預設把 .gradio-container 設成 overflow:hidden，會讓 sticky 失效；clip 同樣裁掉左右溢出，但不擋 sticky */
+.gradio-container{overflow:visible!important;overflow-x:clip!important}
+@media(min-width:1001px){#controls{position:sticky;top:16px;align-self:flex-start;max-height:calc(100vh - 32px);overflow-y:auto;overflow-x:hidden;padding-right:4px;flex-wrap:nowrap!important}#controls>*{flex-shrink:0}}
+#player video{object-fit:contain;background:#050b0d}
