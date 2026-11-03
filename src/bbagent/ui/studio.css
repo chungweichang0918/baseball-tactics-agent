@@ -36,8 +36,6 @@ button:focus-visible,a:focus-visible{outline:2px solid #d4fa92!important;outline
 *{scrollbar-color:#36483f #0d1519;scrollbar-width:thin}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:#0d1519}
 ::-webkit-scrollbar-thumb{background:#36483f;border-radius:6px;border:2px solid #0d1519}::-webkit-scrollbar-thumb:hover{background:#4a6152}
-/* 左側控制欄在寬螢幕上固定，往下看報告時不用捲回頂端 */
-/* Gradio 預設把 .gradio-container 設成 overflow:hidden，會讓 sticky 失效；clip 同樣裁掉左右溢出，但不擋 sticky */
-.gradio-container{overflow:visible!important;overflow-x:clip!important}
-@media(min-width:1001px){#controls{position:sticky;top:16px;align-self:flex-start;max-height:calc(100vh - 32px);overflow-y:auto;overflow-x:hidden;padding-right:4px;flex-wrap:nowrap!important}#controls>*{flex-shrink:0}}
+/* 整頁只有一條捲軸：左側控制欄不另外固定或內部捲動，否則滑鼠在左欄時捲到的是左欄，左右兩邊會互相干擾 */
+#controls{position:static!important;max-height:none!important;overflow:visible!important}
 #player video{object-fit:contain;background:#050b0d}

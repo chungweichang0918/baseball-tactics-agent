@@ -65,6 +65,13 @@ def test_theme_keeps_tables_dark_in_light_mode():
     assert theme.body_background_fill == PALETTE["bg"]
 
 
+def test_controls_do_not_scroll_separately_from_page():
+    from bbagent.ui.app import CSS
+
+    controls = [rule for rule in CSS.split("}") if "#controls{" in rule.replace(" ", "")]
+    assert controls and not any("sticky" in r or "overflow-y:auto" in r for r in controls)
+
+
 @pytest.mark.parametrize("scenario", ["ground", "fly", "bunt"])
 def test_simulation_valid_svg_and_progress(scenario):
     first = field_board(scenario, "standard", 0, ["1"])
