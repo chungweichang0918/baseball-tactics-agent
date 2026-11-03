@@ -5,6 +5,7 @@
         --balls 1 --strikes 1 --score-diff 0 --role offense --hand R
     python scripts/run_agent.py clip.mp4 --outs 2 --bases 13 --role offense --demo-fault   # 示範 Critic 退回
     python scripts/run_agent.py data/samples/b_side_01.mp4 --target batter --role defense --batter-hand L
+    python scripts/run_agent.py clip.mp4 --statcast savant_data.csv --pitch-row 12   # 併入 Statcast 逐球數據
 
 --bases 寫有人的壘號，例如 1、13、123；沒人就省略。
 報告與執行紀錄存在 runs/agent/<時間>_<影片檔名>/。
@@ -80,11 +81,20 @@ def main() -> int:
     p.add_argument("--notes", default="", help="補充說明，例如跑者腳程、打者特性")
     p.add_argument("--demo-fault", action="store_true", help="示範模式：在第一版報告注入錯誤，展示 Critic 退回修正")
     p.add_argument("--no-cache", action="store_true", help="略過 Gemini 快取")
+    p.add_argument("--statcast", type=Path, help="Baseball Savant 逐球 CSV；搭配 --pitch-row 指定影片中的那一球")
+    p.add_argument("--pitch-row", type=int, help="那一球在 CSV 的資料列（第 1 列是第一筆資料，不含表頭）")
     args = p.parse_args()
 
     bad = set(args.bases) - set("123")
     if bad:
         p.error("--bases 只能包含 1、2、3")
+    statcast = None
+    if args.statcast:
+        from bbagent.analysis.statcast import load_statcast
+        pitches = load_statcast(args.statcast)
+        if args.pitch_row is None or not 1 <= args.pitch_row <= len(pitches):
+            p.error(f"--statcast 需要搭配 --pitch-row（1–{len(pitches)}）")
+        statcast = pitches[args.pitch_row - 1].to_dict()
     game = GameState(inning=args.inning, half=args.half, outs=args.outs, on_first="1" in args.bases,
                      on_second="2" in args.bases, on_third="3" in args.bases, balls=args.balls,
                      strikes=args.strikes, score_diff=args.score_diff, our_role=args.role,
@@ -93,7 +103,7 @@ def main() -> int:
     client = GeminiClient(cache_mode="off" if args.no_cache else None)
     state: dict = {}
     final = None
-    for ev in run_agent(args.video, game, client=client, demo_fault=args.demo_fault):
+    for ev in run_agent(args.video, game, client=client, demo_fault=args.demo_fault, statcast=statcast):
         show(ev, state)
         if ev.kind == "final":
             final = ev

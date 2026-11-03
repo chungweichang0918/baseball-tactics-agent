@@ -190,6 +190,18 @@ uv run python scripts/run_agent.py data/samples/b_side_01.mp4 --target batter --
 
    CSV 沒有的項目顯示空缺，不拿影片估值補上。分析完成後，這一球的數據表會附在整合報告與 `session.json`。
 
+**Agent 怎麼使用這一球**：
+
+- **偵察**：`run_agent(..., statcast=...)` 在偵察階段執行 `statcast_pitch`，把這一球變成一筆證據。Planner 規劃時就看得到，可以提出「動作證據對照這一球數據」的戰術問題。
+- **綜合**：Synthesizer 必須在第 2 節引用它，並在第 4 節和影片證據一起解讀。例如揮棒時序配上這一球的球種與球速，打者動作配上擊球初速與仰角。數字照抄原單位；影片的粗估和 Statcast 不同時，以 Statcast 為準。第 5 節要寫出「只有 1 球、對應由使用者確認」。
+- **審查**：Critic 的規則 `statcast` 會檢查報告裡每個 mph／rpm 數字：
+  - 數字前寫了欄位名稱（例如「轉速」），就要和那一欄相符。
+  - 這一球沒有的欄位不能寫出數字。
+  - 有這份數據卻沒引用，會被退回。
+  - 沒有匯入時，報告不能出現 mph／rpm。
+
+終端機版：`python scripts/run_agent.py clip.mp4 --statcast savant_data.csv --pitch-row 12`。
+
 程式在 `src/bbagent/analysis/statcast.py`。欄位定義見 [Savant CSV 說明](https://baseballsavant.mlb.com/csv-docs)。
 
 ## 揮棒偵測評估（MLB-YouTube）
@@ -222,7 +234,8 @@ uv run python scripts/eval_mlb_youtube.py run --labels ~/Downloads/mlb-youtube-m
 
 - 預設從本專案的 GitHub repo 取得程式碼；也可以改用公開的 Drive 連結或自己的 Drive。
 - 金鑰放在 Colab 的 Secrets（`GEMINI_API_KEY`），不要寫在筆記本裡；沒有金鑰也能跑完（Gemini 步驟改用預設流程）。
-- 會額外消耗 API 額度或公開連結的格子都預設關閉（`RUN_…`、`START_DEMO` 改成 `True` 才執行）。
+- 會額外消耗 API 額度的格子預設關閉（`RUN_…` 改成 `True` 才執行）；第 3 節的 Gradio 工作台（`START_DEMO`）預設開啟，會產生公開連結。
+- 11-1 節是選用的 Statcast 逐球數據示範：填入 `STATCAST_CSV` 與 `PITCH_ROW` 才執行。
 - `data/samples/*.mp4` 不進 Git；找不到範例影片時，筆記本會請你上傳。
 
 打包專案（在專案的上一層資料夾執行）：

@@ -195,3 +195,21 @@ def test_batter_branch_end_to_end(video, tmp_path, monkeypatch):
                for k in results["render_keyframes"].payload["data"]["keyframes"])
     final = events[-1]
     assert final.payload["passed"], final.content
+
+
+def test_statcast_becomes_evidence_and_is_reviewed(video, tmp_path, monkeypatch):
+    """匯入的那一球在偵察階段變成證據；報告沒有引用它時，Critic 會退回。"""
+    from test_critic_rules import STATCAST
+    track, t, frames, _ = make_pitcher(n_pitches=2, stride=2)
+    patch_scan(monkeypatch, [track], frames)
+    client = GeminiClient(cache_mode="off", cache_dir=tmp_path / "llm", sdk_client=ScriptedSDK(), sleep=lambda s: None)
+    game = GameState(inning=7, half="bottom", outs=1, on_first=True, our_role="offense", pitcher_hand="R")
+    events = list(run_agent(video, game, client=client, run_dir=tmp_path / "run", statcast=STATCAST))
+    results = [e for e in events if e.kind == "tool_result"]
+    assert results[2].payload["tool"] == "statcast_pitch" and results[2].payload["evidence_id"] == "E03"
+    assert "投球速度 87.3 mph" in results[2].content
+    critiques = [e for e in events if e.kind == "critique" and "passed" in e.payload]
+    assert critiques and not critiques[0].payload["passed"]
+    assert any(i["rule"] == "statcast" for i in critiques[0].payload["issues"])
+    trace = json.loads(Path(events[-1].payload["trace_path"]).read_text(encoding="utf-8"))
+    assert trace["statcast"]["label"] == STATCAST["label"]

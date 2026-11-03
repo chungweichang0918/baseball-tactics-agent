@@ -258,7 +258,8 @@ def analyze_workspace(video, start, end, mode, pitcher_id, batter_id, *args):
         try:
             client = GeminiClient(cache_mode="off" if no_cache else None)
             last = 0.0
-            for ev in run_agent(clip, branch_game, client=client, demo_fault=demo_fault, run_dir=session / focus):
+            for ev in run_agent(clip, branch_game, client=client, demo_fault=demo_fault, run_dir=session / focus,
+                                statcast=statcast):
                 view.apply(ev)
                 if ev.kind in ("report_delta", "progress") and time.monotonic()-last < .2:
                     continue

@@ -71,14 +71,16 @@ def default_run_dir(video: Path) -> Path:
 
 
 def run_agent(video: str | Path, game: GameState, *, client: GeminiClient | None = None,
-              run_dir: str | Path | None = None, demo_fault: bool = False) -> Iterator[AgentEvent]:
+              run_dir: str | Path | None = None, demo_fault: bool = False,
+              statcast: dict | None = None) -> Iterator[AgentEvent]:
+    """statcast：使用者從 Savant CSV 確認的那一球（Pitch.to_dict()），有的話在偵察階段變成一筆證據。"""
     video = Path(video)
     run_dir = Path(run_dir) if run_dir else default_run_dir(video)
     run_dir.mkdir(parents=True, exist_ok=True)
     notices: queue.Queue = queue.Queue()
     client = client or GeminiClient()
     client.on_retry = lambda n, wait, reason: notices.put(f"Gemini 第 {n} 次重試：{reason}，{wait:g} 秒後再試")
-    state = AgentState(video=video, game=game, run_dir=run_dir)
+    state = AgentState(video=video, game=game, run_dir=run_dir, statcast=statcast)
     for event in _run(state, client, notices, demo_fault):
         state.events.append(event)
         yield event
@@ -92,8 +94,11 @@ def _run(state: AgentState, client: GeminiClient, notices: queue.Queue, demo_fau
                      content=f"影片：{state.video.name}\n賽況：{state.game.describe_zh()}",
                      payload={"game": state.game.model_dump()})
 
-    # 偵察
-    for i, (tool, purpose) in enumerate([("probe_video", "讀取影片資訊"), ("scout_overview", "判斷視角與拍攝條件")]):
+    # 偵察：有匯入 Statcast 時一併讀入，讓 Planner 規劃時就知道有哪些逐球數字
+    recon = [("probe_video", "讀取影片資訊"), ("scout_overview", "判斷視角與拍攝條件")]
+    if state.statcast:
+        recon.append(("statcast_pitch", "讀取使用者確認的 Statcast 逐球數據"))
+    for i, (tool, purpose) in enumerate(recon):
         ev = yield from executor.run_step(state, PlanStep(id=f"r{i + 1}", tool=tool, purpose=purpose))
         if tool == "probe_video" and ev.result.status == "failed":
             yield AgentEvent(stage="system", kind="final", title="分析中止", content=ev.result.error or "讀不到影片",

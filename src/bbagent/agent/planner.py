@@ -138,7 +138,7 @@ def validate_draft(draft: PlanDraft, state: AgentState, required: list[str] | No
     for d in draft.steps:
         spec = REGISTRY.get(d.tool)
         if spec is None or not spec.planner_visible:
-            if d.tool in ("probe_video", "scout_overview"):
+            if d.tool in ("probe_video", "scout_overview", "statcast_pitch"):
                 warnings.append(f"{d.tool} 已在規劃前執行，略過")
             else:
                 errors.append(f"步驟 {d.id} 使用了不存在的工具 {d.tool}")

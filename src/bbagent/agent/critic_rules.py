@@ -7,6 +7,7 @@
   tactics      第 1、4 節建議的戰術是否違反賽況（例如兩出局觸擊、進攻方敬遠）
   tipping      提到洩漏球種時，是否用「疑似」並說明樣本數
   limitations  非側拍或鏡頭移動時，第 5 節是否寫出這項限制
+  statcast     mph／rpm 數字是否照抄使用者匯入的 Statcast 逐球數據；有這份數據時是否引用
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ RE_VALUE_RE = re.compile(r"得分期望值([^\d\n+\-−]{0,8})([+\-−]?\d+\.\d{
 CHANGE_WORDS = re.compile(r"提升|提高|增加|上升|減少|降低|下降|變化|改變|損失")
 TOL_DELTA = 0.0015
 TOL_PCT = 0.15
+STATCAST_NUM = re.compile(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(mph|rpm)\b", re.IGNORECASE)
+TOL_STATCAST = {"mph": 0.051, "rpm": 0.51}
 
 
 def split_sections(report: str) -> dict[int, str]:
@@ -103,6 +106,43 @@ def _allowed_numbers(state: AgentState) -> tuple[set[float], set[float], set[flo
 
 def _pct_ok(v: float, allowed: set[float]) -> bool:
     return any(abs(v - a) <= TOL_PCT or (v == int(v) and round(a) == v) for a in allowed)
+
+
+def _statcast_issues(state: AgentState, report: str) -> list[dict]:
+    """mph／rpm 只可能來自 Statcast：影片沒有這份數據時不能出現，有的話必須和證據中的值一致。"""
+    ev = state.latest("statcast_pitch")
+    found = list(STATCAST_NUM.finditer(report))
+    issues = []
+    if ev is None:
+        for m in found:
+            issues.append(_issue("statcast", _context(report, m),
+                                 f"寫了 {m.group(1)} {m.group(2)}，但沒有 Statcast 逐球數據；影片無法量測轉速與擊球初速，"
+                                 "球速只有 km/h 粗估"))
+        return issues
+    if ev.id not in cited_ids(report):
+        issues.append(_issue("statcast", "第 2 節", f"有使用者確認的 Statcast 逐球數據 [{ev.id}]，"
+                                                  "請在第 2 節引用，並在第 4 節和影片的動作證據對照"))
+    fields = ev.result.data["values"]
+    for m in found:
+        value, unit = float(m.group(1).replace(",", "")), m.group(2).lower()
+        before = report[max(0, m.start() - 20):m.start()]
+        named = [f for f in fields if f["unit"] == unit and f["label"] in before]
+        if named:   # 數字前面寫了欄位名稱，就要和那一個欄位相符
+            f = max(named, key=lambda f: before.rfind(f["label"]))
+            if f["value"] is None:
+                message = f"這一球沒有{f['label']}數據，不能寫出 {value:g} {unit}"
+            elif abs(value - f["value"]) > TOL_STATCAST[unit]:
+                message = f"{f['label']}應為 {f['value']:g} {unit}（Statcast），報告寫成 {value:g} {unit}"
+            else:
+                continue
+        else:
+            allowed = [f["value"] for f in fields if f["unit"] == unit and f["value"] is not None]
+            if any(abs(value - a) <= TOL_STATCAST[unit] for a in allowed):
+                continue
+            message = (f"{value:g} {unit} 不是 Statcast 證據中的數值；請照抄證據 [{ev.id}]"
+                       + (f"（可用：{'、'.join(f'{a:g} {unit}' for a in allowed)}）" if allowed else f"（這一球沒有 {unit} 數據）"))
+        issues.append(_issue("statcast", _context(report, m), message))
+    return issues
 
 
 def check_rules(state: AgentState, report: str) -> list[dict]:
@@ -195,4 +235,11 @@ def check_rules(state: AgentState, report: str) -> list[dict]:
         if not any(w in sections.get(5, "") for w in LIMIT_WORDS):
             what = "鏡頭在移動" if state.camera_moving else "影片不是側拍"
             issues.append(_issue("limitations", "第 5 節", f"證據顯示{what}，第 5 節必須寫出這項限制與影響"))
+
+    # statcast：同一句話只回報一次
+    seen = {(i["location"], i["message"]) for i in issues}
+    for issue in _statcast_issues(state, report):
+        if (issue["location"], issue["message"]) not in seen:
+            seen.add((issue["location"], issue["message"]))
+            issues.append(issue)
     return issues

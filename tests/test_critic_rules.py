@@ -138,3 +138,43 @@ def test_limitations_required_for_bad_footage(tmp_path):
     state = make_state(tmp_path)
     state.runtime["camera_motion"] = SimpleNamespace(moving=True)   # OpenCV 量到鏡頭移動
     assert any("鏡頭在移動" in i["message"] for i in check_rules(state, GOOD))
+
+
+STATCAST = {"label": "2017-11-01 · 7 局下 · Slider 87.3 mph", "context": {"description": "swinging_strike"}, "values": [
+    {"key": "release_speed", "label": "投球速度", "unit": "mph", "source": "Statcast 追蹤", "value": 87.3},
+    {"key": "release_spin_rate", "label": "轉速", "unit": "rpm", "source": "Statcast 追蹤", "value": 2510.0},
+    {"key": "launch_speed", "label": "擊球初速", "unit": "mph", "source": "Statcast 追蹤", "value": None}]}
+
+
+def statcast_state(tmp_path):
+    from bbagent.agent.tools import REGISTRY, ToolContext
+    state = make_state(tmp_path)
+    state.statcast = STATCAST
+    state.add_evidence("r3", "statcast_pitch", {}, REGISTRY["statcast_pitch"].run(ToolContext(state, None, print), {}))
+    return state
+
+
+def test_statcast_numbers_must_match_and_be_cited(tmp_path):
+    state = statcast_state(tmp_path)
+    assert "這一球沒有的數據：擊球初速" in state.evidence["E04"].result.summary
+    cited = GOOD.replace("| 2 | 固定姿勢時間穩定 | 1.0 秒 | [E02、E01] |",
+                         "| 2 | 固定姿勢時間穩定 | 1.0 秒 | [E02、E01] |\n| 3 | 揮空的滑球，投球速度 87.3 mph、轉速 2,510 rpm | — | [E04] |")
+    assert check_rules(state, cited) == []
+    assert "statcast" in rules(check_rules(state, GOOD))                      # 有數據卻沒引用
+    wrong = [i["message"] for i in check_rules(state, cited.replace("87.3 mph", "88.0 mph"))]
+    assert any("投球速度應為 87.3 mph" in m for m in wrong)
+    missing = cited.replace("轉速 2,510 rpm", "轉速 2,510 rpm、擊球初速 95 mph")
+    assert any("沒有擊球初速數據" in i["message"] for i in check_rules(state, missing))
+
+
+def test_fallback_report_cites_statcast(tmp_path):
+    """沒有 Gemini 時的證據彙整報告也要通過 Statcast 規則：有引用、數字照抄。"""
+    from bbagent.agent.synthesizer import fallback_report
+    state = statcast_state(tmp_path)
+    issues = check_rules(state, fallback_report(state, "沒有金鑰"))
+    assert not [i for i in issues if i["rule"] == "statcast"], issues
+
+
+def test_mph_without_statcast_is_rejected(tmp_path):
+    claim = GOOD.replace("目前得分期望值 0.509。", "目前得分期望值 0.509。這球轉速約 2400 rpm [E02]。")
+    assert any("沒有 Statcast" in i["message"] for i in check_rules(make_state(tmp_path), claim))

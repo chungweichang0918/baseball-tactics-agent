@@ -42,6 +42,7 @@ class AgentState:
     meta: VideoMeta | None = None
     plan: Plan | None = None
     plan_source: str = ""                                  # "llm" 或 "default"
+    statcast: dict | None = None                           # 使用者確認的那一球（analysis.statcast.Pitch.to_dict）
     evidence: dict[str, Evidence] = field(default_factory=dict)
     runtime: dict[str, Any] = field(default_factory=dict)
     events: list[AgentEvent] = field(default_factory=list)
@@ -98,6 +99,7 @@ class AgentState:
             "meta": self.meta.to_dict() if self.meta else None,
             "plan": self.plan.model_dump() if self.plan else None,
             "plan_source": self.plan_source,
+            "statcast": self.statcast,
             "counters": self.counters,
             "evidence": [ev.to_dict() for ev in self.evidence.values()],
             "critiques": self.critiques,

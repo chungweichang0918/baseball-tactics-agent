@@ -140,6 +140,22 @@ def candidates(pitches: list[Pitch], game, limit: int = 30) -> list[tuple[Pitch,
     return scored[:limit]
 
 
+def evidence_lines(info: dict) -> list[str]:
+    """給 Agent 的證據摘要：有的數值附單位與來源，沒有的列成一行，避免模型自己補數字。"""
+    have = [v for v in info["values"] if v["value"] is not None]
+    missing = [v["label"] for v in info["values"] if v["value"] is None]
+    ctx = info.get("context", {})
+    result = "、".join(x for x in (ctx.get("description"), ctx.get("events")) if x)
+    lines = [f"使用者確認的對應球：{info['label']}"]
+    if result:
+        lines.append(f"這一球的結果（Statcast 紀錄）：{result}")
+    lines += [f"{v['label']} {v['value']:g} {v['unit']}（{v['source']}）".replace("  ", " ") for v in have]
+    if missing:
+        lines.append(f"這一球沒有的數據：{'、'.join(missing)}")
+    lines.append("※ 對應關係由使用者從 CSV 候選清單確認，影片本身無法證明是同一球；只有 1 球，不能推論成投手或打者的習慣")
+    return lines
+
+
 def pitch_markdown(info: dict | None) -> str:
     """報告用：一球的 Statcast 數據表，每列標示來源。"""
     if not info:

@@ -15,6 +15,7 @@ from ..analysis.keypoints import build_series
 from ..analysis.pitching_metrics import compute_pitching_metrics
 from ..analysis.plots import plot_motion_curves
 from ..analysis.segmentation import PHASE_ZH, PITCH_PHASES, segment_pitcher
+from ..analysis.statcast import evidence_lines
 from ..analysis.subject import select_subject
 from ..analysis.swing import SWING_PHASE_ZH, SWING_PHASES, segment_batter
 from ..analysis.tipping import compare_pitches
@@ -92,6 +93,14 @@ def _probe_video(ctx: ToolContext, args: dict) -> ToolResult:
 
 def _scout_overview(ctx: ToolContext, args: dict) -> ToolResult:
     return scout_overview(ctx.state.video, ctx.state.meta, client=ctx.client, model=model_name("fast"))
+
+
+def _statcast_pitch(ctx: ToolContext, args: dict) -> ToolResult:
+    info = ctx.state.statcast
+    if not info:
+        return ToolResult(status="failed", summary="沒有匯入 Statcast 逐球數據", error="使用者沒有選定對應的那一球")
+    have = [v for v in info["values"] if v["value"] is not None]
+    return ToolResult(status="ok" if have else "degraded", summary="\n".join(evidence_lines(info)), data=info)
 
 
 # ---------- 視覺 ----------
@@ -274,6 +283,8 @@ REGISTRY: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("probe_video", "讀取影片基本資訊並偵測場景切換", "（無）", (), True, _probe_video, False),
     ToolSpec("scout_overview", "讓 Gemini 判斷視角、主體與拍攝條件", "（無）", ("probe_video",), False,
              _scout_overview, False),
+    ToolSpec("statcast_pitch", "讀取使用者匯入並確認的 Statcast 逐球數據（球速、轉速、擊球初速等）", "（無）", (), False,
+             _statcast_pitch, False),
     ToolSpec("coarse_pose_scan", "用 YOLO 骨架模型掃描影片、追蹤所有人並選出分析對象（必要）", "（無）",
              ("probe_video",), True, _coarse_pose_scan),
     ToolSpec("camera_motion", "用人物以外的背景特徵點量測鏡頭是否移動（OpenCV，比 Gemini 判斷可靠）", "（無）",
