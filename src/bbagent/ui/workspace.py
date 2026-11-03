@@ -10,13 +10,14 @@ import gradio as gr
 import numpy as np
 
 from ..agent.orchestrator import run_agent
+from ..analysis.statcast import candidates, load_statcast, pitch_markdown
 from ..config import gemini_api_key, load_config, project_path
 from ..llm.gemini_client import GeminiClient
 from ..vision.pose_scan import merge_fragments, run_pose_scan
 from ..vision.video import probe_video
 from .app import BASES, OUTS, CURVES_HELP, _supported, make_game, preview_situation
 from .studio import (branch_cards, field_board, identity_warning, overview_cards, prepare_clip,
-                     simulation_summary, timeline_rows)
+                     simulation_summary, statcast_panel, timeline_rows)
 from .view import RunView
 
 HEADER = '''<div class="studio-header"><div class="brand"><div class="brand-mark"><span>◇</span></div>
@@ -156,6 +157,58 @@ def reset_people():
     return [], gr.update(choices=[("自動選擇", -1)], value=-1), gr.update(choices=[("自動選擇", -1)], value=-1), "片段已變更，請重新辨識人物。"
 
 
+def pitch_choices(pitches, *game_values):
+    """候選球清單：與目前賽況越吻合越前面，標出哪裡不同，讓使用者自己確認是哪一球。"""
+    try:
+        game = make_game(*game_values)
+    except ValueError:
+        return [(p.label(), p.row) for p in pitches[:30]]
+    return [(("✓ 賽況相符 · " if not diff else f"與賽況不同：{'、'.join(diff)} · ") + p.label(), p.row)
+            for p, diff in candidates(pitches, game)]
+
+
+def import_statcast(path, *game_values):
+    if not path:
+        return [], gr.update(choices=[], value=None), "尚未匯入。", None, statcast_panel(None)
+    try:
+        pitches = load_statcast(path)
+    except (ValueError, UnicodeDecodeError, OSError) as e:
+        raise gr.Error(f"Statcast CSV 讀取失敗：{e}") from e
+    choices = pitch_choices(pitches, *game_values)
+    matched = sum(label.startswith("✓") for label, _ in choices)
+    note = (f"讀到 {len(pitches)} 球，其中 {matched} 球與目前賽況相符。" if matched else
+            f"讀到 {len(pitches)} 球，沒有與目前賽況完全相符的；清單依吻合程度排序。") + "請對照影片選出那一球。"
+    return pitches, gr.update(choices=choices, value=None), note, None, statcast_panel(None)
+
+
+def refresh_pitches(pitches, current, *game_values):
+    if not pitches:
+        return gr.update()
+    choices = pitch_choices(pitches, *game_values)
+    return gr.update(choices=choices, value=current if any(v == current for _, v in choices) else None)
+
+
+def select_pitch(pitches, row):
+    pitch = next((p for p in pitches or [] if p.row == row), None)
+    info = pitch.to_dict() if pitch else None
+    return info, statcast_panel(info)
+
+
+def apply_pitch_context(pitches, row):
+    """把選定那一球的局數、球數、壘況、投打慣用手帶進賽況；CSV 沒有的項目保持不動。"""
+    pitch = next((p for p in pitches or [] if p.row == row), None)
+    if not pitch:
+        raise gr.Error("請先從候選清單選一球")
+    def keep(value):
+        return gr.update() if value is None else value
+    bases = pitch.bases
+    hand = {"R": "R", "L": "L"}
+    return (keep(pitch.inning), keep(pitch.half), keep(pitch.outs),
+            gr.update() if bases is None else [k for k, on in zip("123", bases) if on],
+            keep(pitch.balls), keep(pitch.strikes),
+            keep(hand.get(pitch.get("p_throws") or "")), keep(hand.get(pitch.get("stand") or "")))
+
+
 def _snapshot(views, active, status, offset, finished=False):
     p, b = views.get("pitcher", RunView()), views.get("batter", RunView())
     labels = {"pitcher": "投球分析", "batter": "打擊分析", "auto": "自動分析"}
@@ -172,7 +225,7 @@ def _snapshot(views, active, status, offset, finished=False):
 
 
 def analyze_workspace(video, start, end, mode, pitcher_id, batter_id, *args):
-    game_values, demo_fault, no_cache = args[:-2], args[-2], args[-1]
+    game_values, statcast, demo_fault, no_cache = args[:-3], args[-3], args[-2], args[-1]
     if not video:
         raise gr.Error("先上傳一段棒球影片，再開始分析")
     if mode == "full" and pitcher_id is not None and pitcher_id >= 0 and pitcher_id == batter_id:
@@ -227,8 +280,11 @@ def analyze_workspace(video, start, end, mode, pitcher_id, batter_id, *args):
     summary.write_text(json.dumps({"source": Path(video).name, "clip_start_s": offset, "clip_end_s": end,
                                    "mode": mode, "identity_note": identity_warning(views),
                                    "fielding": "manual_scenario_not_video_tracking",
-                                   "timeline": timeline_rows(views, offset)}, ensure_ascii=False, indent=2), encoding="utf-8")
+                                   "timeline": timeline_rows(views, offset), "statcast": statcast},
+                                  ensure_ascii=False, indent=2), encoding="utf-8")
     result = list(_snapshot(views, focus, status, offset, finished=True))
+    if statcast:
+        result[10] += "\n\n---\n\n" + pitch_markdown(statcast)
     combined = session / "combined_report.md"
     combined.write_text(f"# Diamond Studio 整合報告\n\n分析片段：{offset:.3f}–{end:.3f} 秒\n\n"
                         f"賽況：{game.describe_zh()}\n\n{result[10]}\n", encoding="utf-8")
@@ -278,6 +334,15 @@ def build_workspace():
                         people_note = gr.Markdown("多人轉播建議先辨識，對照框線指定角色。", elem_classes="helper")
                         pitcher_id = gr.Dropdown(choices=[("自動選擇", -1)], value=-1, label="投手人物", interactive=True)
                         batter_id = gr.Dropdown(choices=[("自動選擇", -1)], value=-1, label="打者人物", interactive=True)
+                    with gr.Accordion("匯入 Statcast 逐球數據", open=False):
+                        gr.Markdown("到 Baseball Savant 的 Statcast Search 查出那場比賽，下載逐球 CSV。"
+                                    "球速、轉速、擊球初速以這份資料為準。", elem_classes="helper")
+                        statcast_file = gr.File(label="Statcast CSV", file_types=[".csv"], type="filepath", elem_id="statcast-upload")
+                        statcast_note = gr.Markdown("尚未匯入。", elem_classes="helper")
+                        pitch_pick = gr.Dropdown(label="對應影片中的那一球", choices=[], interactive=True)
+                        apply_pitch = gr.Button("把這一球的局數、球數與壘況帶入賽況", size="sm")
+                    pitches = gr.State([])
+                    statcast = gr.State(None)
                     notes = gr.Textbox(label="觀察重點（選填）", placeholder="例如：留意出手節奏與打者跨步", lines=2)
                 run_btn = gr.Button("開始分析精華  ↗", variant="primary", size="lg", elem_id="run-button")
                 stop_btn = gr.Button("停止分析", size="sm")
@@ -313,6 +378,9 @@ def build_workspace():
                         with gr.Accordion("動作曲線與量測說明", open=False):
                             gr.Markdown(CURVES_HELP)
                             bat_curves = gr.Image(label="打擊曲線", type="filepath", interactive=False)
+                    with gr.Tab("逐球數據", id="statcast"):
+                        gr.Markdown("#### 動作看影片，數字看 Statcast。\n影片負責動作階段與時序；這一頁顯示你匯入並確認的那一球的官方逐球數據。", elem_classes="helper")
+                        statcast_view = gr.HTML(statcast_panel(None))
                     with gr.Tab("守備模擬", id="field"):
                         gr.Markdown("#### 把下一個選擇，放上球場。\n選擇假設球路與站位，拖曳回放進度觀察球與守備員。")
                         with gr.Row():
@@ -350,6 +418,13 @@ def build_workspace():
             return float(rows[evt.index[0]][0])
         timeline.select(jump, timeline, scrub).then(seek_frame, [video, scrub], [frame, player])
         gr.on([c.change for c in game_inputs if not isinstance(c, gr.State)], preview_situation, game_inputs, situation, queue=False)
+        statcast_file.change(import_statcast, [statcast_file, *game_inputs],
+                             [pitches, pitch_pick, statcast_note, statcast, statcast_view], queue=False)
+        gr.on([c.change for c in game_inputs if not isinstance(c, gr.State)], refresh_pitches,
+              [pitches, pitch_pick, *game_inputs], pitch_pick, queue=False)
+        pitch_pick.change(select_pitch, [pitches, pitch_pick], [statcast, statcast_view], queue=False)
+        apply_pitch.click(apply_pitch_context, [pitches, pitch_pick],
+                          [inning, half, outs, bases, balls, strikes, hand, batter_hand], queue=False)
         def update_field(s, a, t, *values):
             game = make_game(*values)
             occupied = [k for k, on in zip(["1", "2", "3"], [game.on_first, game.on_second, game.on_third]) if on]
@@ -362,7 +437,7 @@ def build_workspace():
         outputs = [status, overview, pitch_cards, bat_cards, quality, timeline, pitch_gallery, bat_gallery,
                    pitch_curves, bat_curves, report, reviews, files, plan, chat, tabs]
         analysis_event = run_btn.click(analyze_workspace, [video, start, end, mode, pitcher_id, batter_id,
-                                                          *game_inputs, demo_fault, no_cache], outputs,
+                                                          *game_inputs, statcast, demo_fault, no_cache], outputs,
                                       concurrency_id="analysis", concurrency_limit=1, trigger_mode="once")
         stop_btn.click(lambda: "已停止更新 · 可調整片段後重新分析", outputs=status,
                        cancels=[analysis_event, people_event], queue=False)

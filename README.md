@@ -176,6 +176,22 @@ uv run python scripts/run_agent.py data/samples/b_side_01.mp4 --target batter --
 
 軌跡圖會出現在介面的「關鍵幀」分頁。球在手機影片中常常只有幾個像素，找不到軌跡是正常的，Agent 會退回固定 0.42 秒飛行時間的估計。
 
+## 逐球數據：匯入 Statcast CSV
+
+影片只能粗估球速。轉速與擊球初速，一般 30／60 fps 的轉播畫面量不出來。例如 2,400 rpm 是每秒 40 圈。擊球代理點用的是手腕速度峰值，不是擊球初速，也不是棒速。所以 MLB 精華改用 [Baseball Savant](https://baseballsavant.mlb.com/statcast_search) 的逐球 CSV 補上這些數字：
+
+1. 在 Statcast Search 查出那場比賽，下載 CSV。
+2. 在工作台左側「比賽情境 → 匯入 Statcast 逐球數據」上傳。候選球依局數、半局、出局、球數、壘況與目前賽況的吻合程度排序，並標出哪裡不同。
+3. 對照影片選出那一球。單靠一段剪輯無法保證自動找對，所以由使用者確認。需要時可按「把這一球的局數、球數與壘況帶入賽況」。
+4. 右側「逐球數據」分頁顯示球速、轉速、位移、擊球初速、仰角、xBA 等。每個數字都標示來源：
+   - 「Statcast 追蹤」
+   - 「Statcast 追蹤（少數未追蹤到的擊球為官方估計值）」
+   - 「Statcast 模型估計」
+
+   CSV 沒有的項目顯示空缺，不拿影片估值補上。分析完成後，這一球的數據表會附在整合報告與 `session.json`。
+
+程式在 `src/bbagent/analysis/statcast.py`。欄位定義見 [Savant CSV 說明](https://baseballsavant.mlb.com/csv-docs)。
+
 ## 揮棒偵測評估（MLB-YouTube）
 
 用 [MLB-YouTube 資料集](https://github.com/piergiaj/mlb-youtube)（Piergiovanni & Ryoo, 2018）的標註，量測打者揮棒偵測在 MLB 轉播畫面上的準確度。資料集只有標註，影片要自己取得；這些是 MLB 轉播畫面，有版權，只下載少量做自己的測試，**不要放進 repo**（`cache/`、`runs/` 已在 `.gitignore`）。

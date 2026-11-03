@@ -80,6 +80,36 @@ def identity_warning(views: dict[str, RunView]) -> str:
     return "投打數據來自影片候選動作；請在關鍵幀確認人物。守備配置與球路為手動情境示意。"
 
 
+STATCAST_GROUPS = [("投球", ("release_speed", "release_spin_rate", "spin_axis", "release_extension",
+                             "pfx_x", "pfx_z", "plate_x", "plate_z")),
+                   ("揮棒與擊球", ("bat_speed", "swing_length", "launch_speed", "launch_angle", "hit_distance_sc")),
+                   ("預期值", ("estimated_ba_using_speedangle", "estimated_woba_using_speedangle"))]
+
+
+def statcast_panel(info: dict | None) -> str:
+    """逐球進階數據。每張卡片寫明來源；CSV 沒有的數值顯示空缺，不用影片估值補上。"""
+    if not info:
+        return ('<div class="metrics">' + card("逐球數據", "—", "", "在左側「匯入 Statcast 逐球數據」上傳 CSV 並選一球")
+                + card("轉速", "—", "rpm", "一般轉播影格太少，影片無法量測")
+                + card("擊球初速", "—", "mph", "影片只有擊球代理點，不是擊球初速") + '</div>'
+                '<p class="evidence-note">影片分析負責動作階段與時序；球速、轉速、擊球初速改用 Baseball Savant 逐球資料。</p>')
+    values = {v["key"]: v for v in info["values"]}
+    html = [f'<p class="evidence-note">對應的那一球：{escape(info["label"])}</p>']
+    for title, keys in STATCAST_GROUPS:
+        cards = []
+        for key in keys:
+            v, x = values[key], values[key]["value"]
+            if x is None:
+                cards.append(card(v["label"], "—", "", "這一球沒有此數據"))
+                continue
+            shown = f"{x:.3f}" if abs(x) < 1 else f"{x:.0f}" if abs(x) >= 100 else f"{x:.1f}"
+            cards.append(card(v["label"], shown, v["unit"], v["source"]))
+        html.append(f'<div class="section-heading">{escape(title)}</div><div class="metrics">{"".join(cards)}</div>')
+    html.append('<p class="evidence-note">這一球由你從候選清單確認；影片本身無法證明兩者是同一球。'
+                '「影片粗估」的球速請以這裡的 Statcast 數值為準。</p>')
+    return "".join(html)
+
+
 def timeline_rows(views: dict[str, RunView], offset: float = 0) -> list:
     """每個動作階段一列；同一球（或同一次揮棒）的警告只放在它最早的那一列，避免每列重複同一段長文字。"""
     rows = []

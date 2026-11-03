@@ -126,12 +126,17 @@ def test_full_workspace_keeps_results_separate(clip_video, tmp_path, monkeypatch
         yield AgentEvent(stage="system", kind="final", title="完成", content=branch, payload={"passed": True})
     monkeypatch.setattr(w, "run_agent", fake_agent)
     monkeypatch.setattr(w, "runs_root", lambda: tmp_path / "runs")
-    outputs = list(w.analyze_workspace(str(clip_video), 0, 4, "full", 3, 5, *w.DEFAULT_GAME, False, False))
+    statcast = {"label": "2017-11-01 · 7 局下", "values": [
+        {"key": "release_spin_rate", "label": "轉速", "unit": "rpm", "source": "Statcast 追蹤", "value": 2400.0},
+        {"key": "launch_speed", "label": "擊球初速", "unit": "mph", "source": "Statcast 追蹤", "value": None}]}
+    outputs = list(w.analyze_workspace(str(clip_video), 0, 4, "full", 3, 5, *w.DEFAULT_GAME, statcast, False, False))
     assert [x[:2] for x in calls] == [("pitcher", 3), ("batter", 5)]
     assert calls[0][2] != calls[1][2]
     final = outputs[-1]
     assert len(final) == 16 and "投球分析" in final[10] and "打擊分析" in final[10]
     assert Path(final[12][-1]).name == "session.json"
+    assert "2400 rpm" in final[10] and "擊球初速" not in final[10]
+    assert "2400 rpm" in Path(final[12][0]).read_text(encoding="utf-8")
 
 
 def test_workspace_continues_after_branch_error(clip_video, tmp_path, monkeypatch):
@@ -142,7 +147,7 @@ def test_workspace_continues_after_branch_error(clip_video, tmp_path, monkeypatc
         yield AgentEvent(stage="system", kind="final", title="完成", content="batter result", payload={"passed": True})
     monkeypatch.setattr(w, "run_agent", fake_agent)
     monkeypatch.setattr(w, "runs_root", lambda: tmp_path / "runs")
-    final = list(w.analyze_workspace(str(clip_video), 0, 4, "full", -1, -1, *w.DEFAULT_GAME, False, False))[-1]
+    final = list(w.analyze_workspace(str(clip_video), 0, 4, "full", -1, -1, *w.DEFAULT_GAME, None, False, False))[-1]
     assert "部分分支無法完成" in final[0]
     assert "missing pitcher" in final[10] and "batter result" in final[10]
 
